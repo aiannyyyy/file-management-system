@@ -1,0 +1,15 @@
+{
+  "file_id": 27,
+  "file_name": "JRS CORPORATION.pdf",
+  "owner_password": "nscsl",
+  "user_id": "1",
+  "created_at": "2025-11-13T06:00:06.555Z",
+  "note": "Owner password for removing PDF restrictions. DO NOT SHARE.",
+  "restrictions_applied": {
+    "editing": "disabled",
+    "copying": "disabled",
+    "annotations": "disabled",
+    "form_filling": "disabled",
+    "printing": "enabled"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "file_id": 26,
+  "file_name": "cartago.pdf",
+  "owner_password": "nscsl",
+  "user_id": "2",
+  "created_at": "2025-11-10T06:41:08.559Z",
+  "note": "Owner password for removing PDF restrictions. DO NOT SHARE.",
+  "restrictions_applied": {
+    "editing": "disabled",
+    "copying": "disabled",
+    "annotations": "disabled",
+    "form_filling": "disabled",
+    "printing": "enabled"
+  }
+}

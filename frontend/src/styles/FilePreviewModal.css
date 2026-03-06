@@ -1,0 +1,567 @@
+/* ============================================
+   FILE PREVIEW MODAL STYLES - WITH PDF IFRAME SUPPORT
+   File: styles/FilePreviewModal.css
+   ============================================ */
+
+.file-preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.file-preview-modal {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow: hidden;
+  animation: slideUp 0.3s ease-out;
+}
+
+/* Larger modal for PDFs */
+.file-preview-modal.pdf-modal {
+  max-width: 95vw;
+  max-height: 95vh;
+  width: 1200px;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Header */
+.file-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.file-preview-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0;
+  flex: 1;
+  word-break: break-word;
+  max-width: 70%;
+}
+
+.file-preview-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Content */
+.file-preview-content {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: #f3f4f6;
+  position: relative;
+  min-height: 400px;
+}
+
+/* Larger content area for PDFs */
+.pdf-modal .file-preview-content {
+  min-height: 700px;
+  padding: 10px;
+}
+
+/* Loading Spinner */
+.loading-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.spinner {
+  border: 4px solid #e5e7eb;
+  border-top: 4px solid #3b82f6;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Image Preview */
+.image-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.image-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  transition: opacity 0.2s ease-out;
+}
+
+.image-preview img.loading {
+  opacity: 0;
+}
+
+.image-preview img.loaded {
+  opacity: 1;
+  animation: fadeIn 0.3s ease;
+}
+
+/* Video Preview */
+.video-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.video-preview video {
+  max-width: 100%;
+  max-height: 100%;
+  background: #000;
+  border-radius: 8px;
+}
+
+/* Audio Preview */
+.audio-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 40px;
+}
+
+.audio-icon {
+  color: #3b82f6;
+}
+
+.audio-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: #1f2937;
+  margin: 0;
+}
+
+.audio-preview audio {
+  width: 100%;
+  max-width: 400px;
+  border-radius: 8px;
+}
+
+/* PDF Preview - UPDATED FOR IFRAME */
+.pdf-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  padding: 0;
+  gap: 0;
+}
+
+.pdf-preview .pdf-iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 700px;
+  border: none;
+  border-radius: 8px;
+  background: white;
+}
+
+.pdf-preview .pdf-iframe.loading {
+  opacity: 0;
+}
+
+.pdf-preview .pdf-iframe.loaded {
+  opacity: 1;
+  animation: fadeIn 0.3s ease;
+}
+
+.open-in-browser-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+  z-index: 100;
+}
+
+.open-in-browser-btn:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.5);
+}
+
+.open-in-browser-btn:active {
+  transform: translateY(0);
+}
+
+/* Text Preview */
+.text-preview {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.text-preview iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  border: none;
+  border-radius: 8px;
+  background: white;
+}
+
+.text-preview iframe.loading {
+  opacity: 0;
+}
+
+.text-preview iframe.loaded {
+  opacity: 1;
+  animation: fadeIn 0.3s ease;
+}
+
+/* Generic Preview */
+.generic-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+  padding: 40px;
+  text-align: center;
+}
+
+.preview-icon {
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+}
+
+.generic-preview svg {
+  color: #9ca3af;
+}
+
+.file-name {
+  margin: 0;
+  font-weight: 600;
+  color: #1f2937;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.file-type {
+  margin: 0;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* Error State */
+.preview-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 40px;
+  text-align: center;
+}
+
+.preview-error p {
+  font-size: 16px;
+  color: #dc2626;
+  margin: 0;
+}
+
+/* Buttons */
+.file-preview-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.file-preview-btn:hover {
+  background: #e5e7eb;
+  color: #1f2937;
+}
+
+.file-preview-btn.download-btn:hover {
+  background: #dbeafe;
+  color: #3b82f6;
+}
+
+.file-preview-btn.close-btn:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.open-btn {
+  padding: 10px 16px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 14px;
+}
+
+.open-btn:hover {
+  background: #2563eb;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.open-btn:active {
+  transform: translateY(1px);
+}
+
+/* Footer */
+.file-preview-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.file-info {
+  flex: 1;
+  word-break: break-all;
+}
+
+.file-preview-footer .download-btn {
+  background: #3b82f6;
+  color: white;
+  padding: 8px 16px;
+  gap: 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.file-preview-footer .download-btn:hover {
+  background: #2563eb;
+}
+
+/* Dark Mode Support */
+@media (prefers-color-scheme: dark) {
+  .file-preview-modal {
+    background: #1f2937;
+    color: #f3f4f6;
+  }
+
+  .file-preview-header {
+    background: #111827;
+    border-bottom-color: #374151;
+  }
+
+  .file-preview-title {
+    color: #f3f4f6;
+  }
+
+  .file-preview-content {
+    background: #0f172a;
+  }
+
+  .file-preview-footer {
+    background: #111827;
+    border-top-color: #374151;
+    color: #9ca3af;
+  }
+
+  .file-preview-btn {
+    color: #d1d5db;
+  }
+
+  .file-preview-btn:hover {
+    background: #374151;
+    color: #f3f4f6;
+  }
+
+  .image-preview img {
+    background: #1f2937;
+  }
+
+  .text-preview iframe,
+  .pdf-preview .pdf-iframe {
+    background: #1f2937;
+  }
+
+  .file-name {
+    color: #f3f4f6;
+  }
+
+  .file-type {
+    color: #9ca3af;
+  }
+
+  .audio-title {
+    color: #f3f4f6;
+  }
+
+  .preview-error p {
+    color: #fca5a5;
+  }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .file-preview-modal {
+    max-width: 95vw;
+    max-height: 95vh;
+    border-radius: 8px;
+  }
+
+  /* Keep PDF modal large even on mobile */
+  .file-preview-modal.pdf-modal {
+    max-width: 98vw;
+    max-height: 98vh;
+  }
+
+  .file-preview-title {
+    font-size: 14px;
+    max-width: 60%;
+  }
+
+  .file-preview-content {
+    padding: 12px;
+    min-height: 300px;
+  }
+
+  .pdf-modal .file-preview-content {
+    min-height: 500px;
+    padding: 5px;
+  }
+
+  .audio-preview,
+  .generic-preview {
+    padding: 30px 20px;
+  }
+
+  .preview-icon {
+    width: 100px;
+    height: 100px;
+  }
+
+  .pdf-preview .pdf-iframe,
+  .text-preview iframe {
+    min-height: 450px;
+  }
+
+  .open-in-browser-btn {
+    font-size: 11px;
+    padding: 6px 12px;
+    top: 5px;
+    right: 5px;
+  }
+}
+
+/* Scrollbar Styling */
+.file-preview-content::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.file-preview-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.file-preview-content::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+
+.file-preview-content::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* Focus Styles for Accessibility */
+.file-preview-btn:focus,
+.open-btn:focus,
+.open-in-browser-btn:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
