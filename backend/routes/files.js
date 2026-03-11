@@ -388,13 +388,29 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
     
     // Check for duplicate file names in the same folder
     const duplicateCheck = folder_id 
-      ? await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id = ?", [file.originalname, folder_id])
-      : await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id IS NULL", [file.originalname]);
-    
+      ? await inhouseDb.query("SELECT id, file_name FROM files WHERE file_name = ? AND folder_id = ?", [file.originalname, folder_id])
+      : await inhouseDb.query("SELECT id, file_name FROM files WHERE file_name = ? AND folder_id IS NULL", [file.originalname]);
+
     if (duplicateCheck[0].length > 0) {
-      console.log("❌ Duplicate file name found");
-      await unlinkAsync(file.path);
-      return res.status(400).json({ error: "A file with this name already exists in the same location" });
+      const existingFile = duplicateCheck[0][0];
+      console.log("⚠️ Duplicate file detected — returning conflict");
+      // Don't delete the uploaded file — keep it for user decision
+      return res.status(409).json({
+        conflict: true,
+        message: `A file named "${file.originalname}" already exists in this location.`,
+        existing_file: {
+          id: existingFile.id,
+          file_name: existingFile.file_name,
+        },
+        uploaded_file: {
+          temp_path: file.path,
+          file_name: file.originalname,
+          file_size: file.size,
+          file_type: path.extname(file.originalname).substring(1).toLowerCase(),
+        },
+        available_strategies: ['overwrite', 'version', 'skip'],
+        hint: 'Resubmit with conflict_strategy and temp_path to resolve'
+      });
     }
     
     console.log("💾 Inserting file into database...");
@@ -447,6 +463,127 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
     }
     
     res.status(500).json({ error: "Failed to upload file: " + err.message });
+  }
+});
+
+// ================== Resolve Upload Conflict ==================
+router.post("/upload/resolve", async (req, res) => {
+  console.log("\n⚡ ===== RESOLVE UPLOAD CONFLICT =====");
+  const { conflict_strategy, temp_path, file_name, file_size, file_type, folder_id, created_by, existing_file_id } = req.body;
+
+  try {
+    if (!conflict_strategy) return res.status(400).json({ error: "conflict_strategy is required" });
+    if (!temp_path) return res.status(400).json({ error: "temp_path is required" });
+    if (!created_by) return res.status(400).json({ error: "created_by is required" });
+
+    const userExists = await validateUser(created_by);
+    if (!userExists) {
+      await unlinkAsync(temp_path).catch(() => {});
+      return res.status(400).json({ error: "Invalid created_by user" });
+    }
+
+    if (!fs.existsSync(temp_path)) {
+      return res.status(400).json({ error: "Uploaded file no longer exists. Please upload again." });
+    }
+
+    // ── SKIP ──────────────────────────────────────────────────
+    if (conflict_strategy === 'skip') {
+      await unlinkAsync(temp_path).catch(() => {});
+      return res.json({ message: "Upload skipped.", skipped: true });
+    }
+
+    // ── OVERWRITE ─────────────────────────────────────────────
+    if (conflict_strategy === 'overwrite') {
+      const [existingRows] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [existing_file_id]);
+      if (existingRows.length === 0) {
+        await unlinkAsync(temp_path).catch(() => {});
+        return res.status(404).json({ error: "Existing file not found" });
+      }
+      const existingFile = existingRows[0];
+
+      if (existingFile.file_path && fs.existsSync(existingFile.file_path)) {
+        await unlinkAsync(existingFile.file_path).catch(() => {});
+      }
+
+      await inhouseDb.query(
+        `UPDATE files SET file_path = ?, file_size = ?, file_type = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`,
+        [temp_path, file_size, file_type, created_by, existing_file_id]
+      );
+
+      await addActivityLog(created_by, "update", "file", existing_file_id, file_name,
+        JSON.stringify({ action: 'overwrite_upload' })
+      );
+
+      return res.json({
+        message: `"${file_name}" overwritten successfully.`,
+        fileId: existing_file_id,
+        fileName: file_name,
+        strategy: 'overwrite'
+      });
+    }
+
+    // ── VERSION ───────────────────────────────────────────────
+    if (conflict_strategy === 'version') {
+      const [existingRows] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [existing_file_id]);
+      if (existingRows.length === 0) {
+        await unlinkAsync(temp_path).catch(() => {});
+        return res.status(404).json({ error: "Existing file not found" });
+      }
+      const existingFile = existingRows[0];
+
+      const [versionRows] = await inhouseDb.query(
+        "SELECT MAX(version_number) as max_version FROM file_versions WHERE file_id = ?",
+        [existing_file_id]
+      );
+      const versionNumber = (versionRows[0].max_version || 0) + 1;
+
+      const ext = path.extname(file_name);
+      const baseName = path.basename(file_name, ext);
+      const versionedFileName = `${baseName} (Version ${versionNumber})${ext}`;
+
+      const versionedPhysicalName = `${Date.now()}-${versionedFileName.replace(/[^a-zA-Z0-9.\-()]/g, '_')}`;
+      const versionedFilePath = path.join('uploads', versionedPhysicalName);
+      const resolvedVersionedPath = path.join(process.cwd(), versionedFilePath);
+
+      await fs.promises.rename(temp_path, resolvedVersionedPath);
+
+      const [result] = await inhouseDb.query(
+        `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        [folder_id || null, versionedFileName, versionedFilePath, file_type, file_size, created_by, created_by]
+      );
+
+      await inhouseDb.query(
+        `INSERT INTO file_versions 
+         (file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          existing_file_id, versionNumber, versionedFileName,
+          versionedFilePath, file_size, file_type,
+          folder_id || null, created_by,
+          `Version ${versionNumber} — uploaded alongside existing file`
+        ]
+      );
+
+      await addActivityLog(created_by, "upload", "file", result.insertId, versionedFileName,
+        JSON.stringify({ action: 'version_upload', original_file_id: existing_file_id, version_number: versionNumber })
+      );
+
+      return res.json({
+        message: `Saved as "${versionedFileName}" (version ${versionNumber}).`,
+        fileId: result.insertId,
+        fileName: versionedFileName,
+        strategy: 'version',
+        versionNumber
+      });
+    }
+
+    return res.status(400).json({ error: `Unknown conflict_strategy: ${conflict_strategy}` });
+
+  } catch (err) {
+    console.error("💥 Error resolving upload conflict:", err);
+    await unlinkAsync(temp_path).catch(() => {});
+    return res.status(500).json({ error: "Failed to resolve conflict: " + err.message });
   }
 });
 

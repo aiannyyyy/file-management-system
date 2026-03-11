@@ -4,7 +4,8 @@ import {
   BarChart3, Shield, Briefcase, GraduationCap, Heart, Settings, Edit3,
   Trash2, Grid3X3, List, X, AlertCircle, Loader, ArrowLeft, Folder,
   Upload, Download, Star, StarOff, ChevronRight, Home, File, CheckCircle,
-  Eye, Share2, Mail, Send, User, Info
+  Eye, Share2, Mail, Send, User, Info, Move, History, Clock, RotateCcw,
+  FolderPlus, Check
 } from 'lucide-react';
 import { useDarkMode } from '../contexts/DarkModeContext';
 import { useAuth, CategoryPermissions } from '../contexts/AuthContext';
@@ -55,6 +56,104 @@ interface BreadcrumbItem { id: number | null; name: string; type: 'category' | '
 
 interface UploadProgress { fileName: string; progress: number; status: 'uploading' | 'completed' | 'error'; error?: string; }
 
+interface MoveItem { id: number; name: string; type: 'file' | 'folder'; }
+interface FolderNode { id: number; name: string; category_id: number; parent_folder_id: number | null; children?: FolderNode[]; }
+interface ConflictItem { id: number; name: string; type: string; conflicting_id: number; }
+interface MoveHistoryBatch { batch_id: string; moved_at: string; item_count: number; items: any[]; can_undo: boolean; undone: boolean; undone_at: string | null; expires_in: string; }
+
+
+// ============================================================
+// MOVE TREE NODE — recursive expandable folder picker
+// ============================================================
+interface MoveTreeNodeProps {
+  folder: FolderNode;
+  depth: number;
+  selectedFolderId: string | null;
+  moveItemIds: number[];
+  isDarkMode: boolean;
+  categoryMoveApi: string;
+  onSelect: (folderId: string, folderName: string, categoryId: number) => void;
+}
+
+const MoveTreeNode: React.FC<MoveTreeNodeProps> = ({
+  folder, depth, selectedFolderId, moveItemIds, isDarkMode, categoryMoveApi, onSelect
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  const [children, setChildren] = useState<FolderNode[]>([]);
+  const [loadingChildren, setLoadingChildren] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  const isSelected = String(selectedFolderId) === String(folder.id);
+  const isBeingMoved = moveItemIds.includes(folder.id);
+
+  const handleExpand = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!expanded && !hasLoaded) {
+      setLoadingChildren(true);
+      try {
+        const res = await fetch(`${categoryMoveApi}/folders?category_id=${folder.category_id}&parent_folder_id=${folder.id}`);
+        const data = await res.json();
+        setChildren(data.folders || []);
+        setHasLoaded(true);
+      } catch {}
+      setLoadingChildren(false);
+    }
+    setExpanded(v => !v);
+  };
+
+  return (
+    <div>
+      <div
+        className={`flex items-center gap-1 rounded-lg mb-0.5 transition-colors
+          ${isBeingMoved ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
+          ${isSelected
+            ? 'bg-blue-600 text-white'
+            : isDarkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-50 text-gray-700'
+          }`}
+        style={{ paddingLeft: `${8 + depth * 16}px`, paddingRight: '8px', paddingTop: '7px', paddingBottom: '7px' }}
+        onClick={() => !isBeingMoved && onSelect(String(folder.id), folder.name, folder.category_id)}
+      >
+        {/* Expand/collapse chevron */}
+        <button
+          onClick={handleExpand}
+          className={`p-0.5 rounded flex-shrink-0 ${isSelected ? 'text-white' : isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-400 hover:text-gray-600'}`}
+        >
+          {loadingChildren
+            ? <Loader className="w-3 h-3 animate-spin" />
+            : <ChevronRight className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+          }
+        </button>
+        <Folder className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-white' : 'text-yellow-500'}`} />
+        <span className="text-sm truncate">{folder.name}</span>
+        {isBeingMoved && <span className="ml-auto text-xs opacity-60">(moving)</span>}
+      </div>
+      {expanded && children.length > 0 && (
+        <div>
+          {children.map(child => (
+            <MoveTreeNode
+              key={child.id}
+              folder={child}
+              depth={depth + 1}
+              selectedFolderId={selectedFolderId}
+              moveItemIds={moveItemIds}
+              isDarkMode={isDarkMode}
+              categoryMoveApi={categoryMoveApi}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
+      {expanded && hasLoaded && children.length === 0 && (
+        <div
+          className={`text-xs py-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}
+          style={{ paddingLeft: `${24 + depth * 16}px` }}
+        >
+          No subfolders
+        </div>
+      )}
+    </div>
+  );
+};
 // ============================================================
 // MAIN COMPONENT
 // ============================================================
@@ -128,7 +227,50 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const [dragOver, setDragOver]             = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Upload conflict state
+  const [uploadConflict, setUploadConflict] = useState<any>(null);
+  const [showUploadConflictModal, setShowUploadConflictModal] = useState(false);
+
+  // Select mode
+  const [isSelectMode, setIsSelectMode]       = useState(false);
+  const [selectedFiles, setSelectedFiles]     = useState<number[]>([]);
+  const [selectedFolders, setSelectedFolders] = useState<number[]>([]);
+
+  // Move modal
+  const [showMoveModal, setShowMoveModal]               = useState(false);
+  const [moveItems, setMoveItems]                       = useState<MoveItem[]>([]);
+  const [moveTargetFolderId, setMoveTargetFolderId]     = useState<string | null>(null);
+  const [moveTargetFolderName, setMoveTargetFolderName] = useState('Home (root)');
+  const [moveTargetCategoryId, setMoveTargetCategoryId] = useState<number | null>(null);
+  const [folderTree, setFolderTree]                     = useState<FolderNode[]>([]);
+  const [allCategories, setAllCategories]               = useState<Category[]>([]);
+  const [movePreviewConflicts, setMovePreviewConflicts] = useState<ConflictItem[]>([]);
+  const [moveLoading, setMoveLoading]                   = useState(false);
+  const [showInlineFolderCreate, setShowInlineFolderCreate] = useState(false);
+  const [inlineFolderName, setInlineFolderName]             = useState('');
+
+  // Conflict modal
+  const [showConflictModal, setShowConflictModal]   = useState(false);
+  const [pendingConflicts, setPendingConflicts]     = useState<ConflictItem[]>([]);
+  const [conflictDecisions, setConflictDecisions]   = useState<Record<number, 'overwrite' | 'version' | 'skip'>>({});
+
+  // Undo toast
+  const [undoToast, setUndoToast] = useState<{ batchId: string; message: string; visible: boolean } | null>(null);
+
+  // History modal
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [moveHistory, setMoveHistory]           = useState<MoveHistoryBatch[]>([]);
+  const [historyLoading, setHistoryLoading]     = useState(false);
+  const [expandedBatch, setExpandedBatch]       = useState<string | null>(null);
+
+  // Version modal
+  const [showVersionModal, setShowVersionModal] = useState(false);
+  const [versionFile, setVersionFile]           = useState<FileItem | null>(null);
+  const [versions, setVersions]                 = useState<any[]>([]);
+  const [versionsLoading, setVersionsLoading]   = useState(false);
+
   const CURRENT_USER_ID = currentUser?.id ? currentUser.id.toString() : '1';
+  const CATEGORY_MOVE_API = 'http://localhost:3002/api/category-move';
 
   const MAX_FILE_SIZE   = 50  * 1024 * 1024;
   const MAX_TOTAL_SIZE  = 200 * 1024 * 1024;
@@ -289,6 +431,266 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const closeRenameModal = () => { setRenameMode(false); setRenameFileId(null); setNewFileName(''); setModalError(''); };
 
   // ============================================================
+  // SELECT MODE
+  // ============================================================
+
+  const exitSelectMode = () => { setIsSelectMode(false); setSelectedFiles([]); setSelectedFolders([]); };
+
+  const toggleFileSelection = (id: number) =>
+    setSelectedFiles(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const toggleFolderSelection = (id: number) =>
+    setSelectedFolders(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const selectAllVisible = () => {
+    const fd = filteredData() as any;
+    setSelectedFiles((fd.files || []).map((f: FileItem) => f.id));
+    setSelectedFolders((fd.folders || []).map((f: Folder) => f.id));
+  };
+
+  const isAllSelected = () => {
+    const fd = filteredData() as any;
+    const allFiles = fd.files || [];
+    const allFolders = fd.folders || [];
+    if (allFiles.length === 0 && allFolders.length === 0) return false;
+    return allFiles.every((f: FileItem) => selectedFiles.includes(f.id)) &&
+           allFolders.every((f: Folder) => selectedFolders.includes(f.id));
+  };
+
+  // ============================================================
+  // MOVE
+  // ============================================================
+
+  const openMoveModalForSelected = () => {
+    const items: MoveItem[] = [
+      ...selectedFiles
+        .filter(id => { const f = files.find(x => x.id === id); return f && String(f.created_by) === String(CURRENT_USER_ID); })
+        .map(id => { const f = files.find(x => x.id === id)!; return { id, name: f.name, type: 'file' as const }; }),
+      ...selectedFolders
+        .filter(id => { const f = folders.find(x => x.id === id); return f && String(f.created_by) === String(CURRENT_USER_ID); })
+        .map(id => { const f = folders.find(x => x.id === id)!; return { id, name: f.name, type: 'folder' as const }; })
+    ];
+    if (items.length === 0) { setError('You can only move items you own.'); return; }
+    openMoveModal(items);
+  };
+
+  const openMoveModalForItem = (item: MoveItem) => openMoveModal([item]);
+
+  const openMoveModal = async (items: MoveItem[]) => {
+    setMoveItems(items);
+    setMoveTargetFolderId(null);
+    setMoveTargetFolderName('Home (root)');
+    setMoveTargetCategoryId(currentCategoryId);
+    setMovePreviewConflicts([]);
+    setShowInlineFolderCreate(false);
+    setInlineFolderName('');
+    await loadAllCategories();
+    if (currentCategoryId) {
+      const roots = await loadFolderTree(currentCategoryId, null);
+      setFolderTree(roots);
+    }
+    setShowMoveModal(true);
+  };
+
+  const loadAllCategories = async () => {
+    try {
+      const res = await fetch(`${CATEGORY_MOVE_API}/categories`);
+      const data = await res.json();
+      setAllCategories(data.categories || []);
+    } catch {}
+  };
+
+  const loadFolderTree = async (categoryId: number, parentFolderId: number | null = null): Promise<FolderNode[]> => {
+    try {
+      const url = `${CATEGORY_MOVE_API}/folders?category_id=${categoryId}&parent_folder_id=${parentFolderId === null ? 'null' : parentFolderId}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      return data.folders || [];
+    } catch {
+      return [];
+    }
+  };
+
+  const selectMoveDestination = async (folderId: string | null, folderName: string, categoryId: number) => {
+    setMoveTargetFolderId(folderId);
+    setMoveTargetFolderName(folderName);
+    setMoveTargetCategoryId(categoryId);
+    setMovePreviewConflicts([]);
+    try {
+      const fileIds = moveItems.filter(i => i.type === 'file').map(i => i.id);
+      if (fileIds.length === 0) return;
+      const params = new URLSearchParams();
+      fileIds.forEach(id => params.append('file_ids', id.toString()));
+      if (folderId) params.append('target_folder_id', folderId);
+      params.append('target_category_id', categoryId.toString());
+      const res = await fetch(`${CATEGORY_MOVE_API}/preview?${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        setMovePreviewConflicts(data.preview?.conflicts || []);
+      }
+    } catch {}
+  };
+
+  const executeMove = async (conflictStrategy: 'overwrite' | 'version' | 'skip') => {
+    setMoveLoading(true);
+    try {
+      const fileIds = moveItems.filter(i => i.type === 'file').map(i => i.id);
+      const folderIds = moveItems.filter(i => i.type === 'folder').map(i => i.id);
+      const res = await fetch(`${CATEGORY_MOVE_API}/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_ids: fileIds,
+          folder_ids: folderIds,
+          target_folder_id: moveTargetFolderId || null,
+          target_category_id: moveTargetCategoryId,
+          moved_by: CURRENT_USER_ID,
+          conflict_strategy: conflictStrategy
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Move failed');
+      setShowMoveModal(false);
+      setShowConflictModal(false);
+      exitSelectMode();
+      await fetchFilesAndFolders();
+      showUndoToastMsg(data.batch_id, `Moved ${data.summary?.total_moved || moveItems.length} item(s) to "${moveTargetFolderName}"`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Move failed');
+    } finally { setMoveLoading(false); }
+  };
+
+  const handleMoveConfirm = () => {
+    if (movePreviewConflicts.length > 0) {
+      setPendingConflicts(movePreviewConflicts);
+      const decisions: Record<number, 'overwrite' | 'version' | 'skip'> = {};
+      movePreviewConflicts.forEach(c => { decisions[c.id] = 'version'; });
+      setConflictDecisions(decisions);
+      setShowMoveModal(false);
+      setShowConflictModal(true);
+    } else {
+      executeMove('version');
+    }
+  };
+
+  const applyAllConflicts = (strategy: 'overwrite' | 'version' | 'skip') => {
+    const decisions: Record<number, 'overwrite' | 'version' | 'skip'> = {};
+    pendingConflicts.forEach(c => { decisions[c.id] = strategy; });
+    setConflictDecisions(decisions);
+  };
+
+  const createInlineFolder = async () => {
+    if (!inlineFolderName.trim() || !moveTargetCategoryId) return;
+    const nameToCreate = inlineFolderName.trim();
+    try {
+      const res = await fetch('http://localhost:3002/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: nameToCreate,
+          category_id: moveTargetCategoryId,
+          parent_folder_id: moveTargetFolderId ? Number(moveTargetFolderId) : null,
+          created_by: CURRENT_USER_ID
+        })
+      });
+      if (!res.ok) throw new Error('Failed to create folder');
+      const result = await res.json();
+      const newFolder = result.folder || result;
+      setInlineFolderName('');
+      setShowInlineFolderCreate(false);
+      // Refresh root tree and auto-select the new folder
+      const roots = await loadFolderTree(moveTargetCategoryId, null);
+      setFolderTree(roots);
+      selectMoveDestination(String(newFolder.id), nameToCreate, moveTargetCategoryId);
+      setSuccess(`✅ Folder "${nameToCreate}" created`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create folder');
+    }
+  };
+
+  // ============================================================
+  // UNDO TOAST
+  // ============================================================
+
+  const showUndoToastMsg = (batchId: string, message: string) => {
+    setUndoToast({ batchId, message, visible: true });
+    setTimeout(() => setUndoToast(null), 8000);
+  };
+
+  const handleUndoMove = async (batchId: string) => {
+    try {
+      const res = await fetch(`${CATEGORY_MOVE_API}/undo/${batchId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: CURRENT_USER_ID })
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Undo failed');
+      setUndoToast(null);
+      await fetchFilesAndFolders();
+      setSuccess('↩️ Move undone successfully');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Undo failed');
+    }
+  };
+
+  // ============================================================
+  // HISTORY
+  // ============================================================
+
+  const loadMoveHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`${CATEGORY_MOVE_API}/history?user_id=${CURRENT_USER_ID}`);
+      const data = await res.json();
+      setMoveHistory(data.history || []);
+    } catch {} finally { setHistoryLoading(false); }
+  };
+
+  // ============================================================
+  // VERSION HISTORY
+  // ============================================================
+
+  const openVersionModal = async (file: FileItem) => {
+    setVersionFile(file);
+    setVersionsLoading(true);
+    setShowVersionModal(true);
+    try {
+      const res = await fetch(`http://localhost:3002/api/files/${file.id}/versions`);
+      const data = await res.json();
+      setVersions(data.versions || []);
+    } catch {} finally { setVersionsLoading(false); }
+  };
+
+  const handleRestoreVersion = async (fileId: number, versionId: number) => {
+    if (!confirm('Restore this version? Current file will be saved as a new version.')) return;
+    try {
+      const res = await fetch(`http://localhost:3002/api/files/versions/${fileId}/restore/${versionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restored_by: CURRENT_USER_ID })
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Restore failed');
+      setSuccess('✅ Version restored successfully');
+      if (versionFile) await openVersionModal(versionFile);
+      await fetchFilesAndFolders();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Restore failed'); }
+  };
+
+  const handleDeleteVersion = async (fileId: number, versionId: number) => {
+    if (!confirm('Delete this version permanently?')) return;
+    try {
+      const res = await fetch(`http://localhost:3002/api/files/versions/${fileId}/version/${versionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deleted_by: CURRENT_USER_ID })
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Delete failed');
+      setSuccess('🗑️ Version deleted');
+      if (versionFile) await openVersionModal(versionFile);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Delete version failed'); }
+  };
+
+  // ============================================================
   // SHARE
   // ============================================================
 
@@ -396,6 +798,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
 
   const handleBackToCategories = () => {
     setCurrentView('categories'); setCurrentCategoryId(null); setCurrentFolderId(null); setBreadcrumb([]);
+    exitSelectMode();
   };
 
   // ============================================================
@@ -545,6 +948,14 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
         fd.append('file', uploadFiles[0]); fd.append('category_id', currentCategoryId.toString()); fd.append('created_by', CURRENT_USER_ID);
         if (currentFolderId) fd.append('folder_id', currentFolderId.toString());
         response = await fetch('http://localhost:3002/api/files/upload-single', { method: 'POST', body: fd });
+
+        if (response.status === 409) {
+          const conflictData = await response.json();
+          setUploadConflict(conflictData);
+          setShowUploadConflictModal(true);
+          setSubmitting(false);
+          return;
+        }
       } else if (uploadMode === 'bulk') {
         response = await fetch('http://localhost:3002/api/files/bulk-upload', { method: 'POST', body: formData });
       } else {
@@ -572,6 +983,40 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     } finally { setSubmitting(false); }
   };
 
+  const handleResolveUploadConflict = async (strategy: 'overwrite' | 'version' | 'skip') => {
+    if (!uploadConflict) return;
+    setSubmitting(true);
+    try {
+      const response = await fetch('http://localhost:3002/api/files/upload/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          strategy,
+          temp_path: uploadConflict.uploaded_file.temp_path,
+          original_name: uploadConflict.uploaded_file.original_name,
+          file_size: uploadConflict.uploaded_file.file_size,
+          mime_type: uploadConflict.uploaded_file.mime_type,
+          file_type: uploadConflict.uploaded_file.file_type,
+          existing_file_id: uploadConflict.existing_file.id,
+          category_id: uploadConflict.context.category_id,
+          folder_id: uploadConflict.context.folder_id,
+          created_by: uploadConflict.context.created_by,
+        })
+      });
+      if (!response.ok) throw new Error((await response.json())?.error || 'Resolve failed');
+      const result = await response.json();
+      setShowUploadConflictModal(false);
+      setUploadConflict(null);
+      await fetchFilesAndFolders();
+      closeModal();
+      if (strategy === 'skip') setSuccess(`⏭️ Upload skipped — existing file kept.`);
+      else if (strategy === 'overwrite') setSuccess(`✅ File overwritten. Previous version saved as v${result.file?.previous_version_saved}.`);
+      else setSuccess(`✅ Saved as "${result.file?.name}".`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resolve conflict');
+    } finally { setSubmitting(false); }
+  };
+
   // ============================================================
   // FILE OPS
   // ============================================================
@@ -593,13 +1038,8 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   };
 
   const handlePreviewFile = async (file: FileItem) => {
-    try {
-      const w = window.open(`http://localhost:3002/api/files/${file.id}/download?user_id=${CURRENT_USER_ID}&preview=true`, '_blank');
-      if (!w) throw new Error('Popup blocked. Please allow popups for this site.');
-      setSuccess(`👁️ Opening preview for "${file.name}"…`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Preview failed');
-    }
+    setViewingFile(file);
+    setShowFileViewer(true);
   };
 
   const handleStarFile = async (e: React.MouseEvent, file: FileItem) => {
@@ -754,17 +1194,28 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     <div className={`min-h-screen ${isDarkMode ? 'bg-gray-900' : 'bg-gray-50'} p-6 transition-colors duration-200`}>
       <div className="max-w-7xl mx-auto">
 
-        {/* Header */}
+        {/* ── HEADER — FIX 1: History button moved here, matching Files.tsx ── */}
         <div className="mb-6">
-          <div className="flex items-center gap-4 mb-2">
-            {currentView !== 'categories' && (
-              <button onClick={handleBackToCategories} className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}>
-                <ArrowLeft className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} />
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-4">
+              {currentView !== 'categories' && (
+                <button onClick={handleBackToCategories} className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}>
+                  <ArrowLeft className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} />
+                </button>
+              )}
+              <h1 className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                {currentView === 'categories' ? 'Categories' : 'File Management'}
+              </h1>
+            </div>
+            {/* History button — only shown in files-folders view, same style as Files.tsx */}
+            {currentView === 'files-folders' && (
+              <button
+                onClick={() => { setShowHistoryModal(true); loadMoveHistory(); }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${isDarkMode ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'}`}
+              >
+                <History className="w-4 h-4" /> History
               </button>
             )}
-            <h1 className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-              {currentView === 'categories' ? 'Categories' : 'File Management'}
-            </h1>
           </div>
           {currentView === 'files-folders' && breadcrumb.length > 0 && (
             <div className={`flex items-center gap-2 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -797,7 +1248,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* Toolbar */}
+        {/* ── TOOLBAR — History button removed from here ── */}
         <div className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} rounded-lg shadow-sm border p-4 mb-6`}>
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
             <div className="relative flex-1 max-w-md">
@@ -830,9 +1281,105 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                     className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${hasPermission(CategoryPermissions.UPLOAD_FILES) ? 'bg-blue-600 text-white hover:bg-blue-700' : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed opacity-50' : 'bg-gray-200 text-gray-400 cursor-not-allowed opacity-50'}`}>
                     <Upload className="w-4 h-4" /> Upload Files
                   </button>
+                  {!isSelectMode && (
+                    <button onClick={() => setIsSelectMode(true)}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
+                      <Check className="w-4 h-4" /> Select
+                    </button>
+                  )}
                 </div>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* ── FIX 3: Selection Action Bar — animated slide-in matching Files.tsx ── */}
+        <div className={`transition-all duration-200 overflow-hidden ${isSelectMode && currentView === 'files-folders' ? 'max-h-20 mb-4' : 'max-h-0 mb-0'}`}>
+          <div className={`rounded-xl border px-4 py-3 flex items-center gap-3 ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} shadow-sm`}>
+            {/* Left: select all checkbox + count */}
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <input
+                type="checkbox"
+                checked={isAllSelected()}
+                onChange={e => e.target.checked ? selectAllVisible() : exitSelectMode()}
+                className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+              />
+              <span className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                {selectedFiles.length + selectedFolders.length > 0
+                  ? `${selectedFiles.length + selectedFolders.length} selected`
+                  : 'Select all'}
+              </span>
+            </div>
+
+            {/* Divider */}
+            <div className={`w-px h-5 flex-shrink-0 ${isDarkMode ? 'bg-gray-600' : 'bg-gray-200'}`} />
+
+            {/* Middle: action buttons */}
+            <div className="flex items-center gap-2 flex-1">
+              {selectedFiles.length + selectedFolders.length > 0 ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={openMoveModalForSelected}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                  >
+                    <Move className="w-3.5 h-3.5" /> Move
+                  </button>
+                  {selectedFiles.length > 0 && (
+                    <button
+                      onClick={async () => {
+                        for (const id of selectedFiles) {
+                          const f = files.find(x => x.id === id);
+                          if (f) await handleDownloadFile(f);
+                        }
+                        exitSelectMode();
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm font-medium"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Download
+                    </button>
+                  )}
+                  {selectedFiles.length > 0 && selectedFiles.every(id => {
+                    const f = files.find(x => x.id === id);
+                    return f && String(f.created_by) === String(CURRENT_USER_ID);
+                  }) && (
+                    <button
+                      onClick={() => {
+                        if (!confirm(`Delete ${selectedFiles.length} file(s)? This cannot be undone.`)) return;
+                        Promise.all(
+                          selectedFiles.map(id => {
+                            const uid = typeof currentUser?.id === 'string' ? parseInt(currentUser.id) : currentUser?.id;
+                            return fetch(`http://localhost:3002/api/categories/files/${id}`, {
+                              method: 'DELETE',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ deleted_by: uid, updated_by: uid })
+                            });
+                          })
+                        ).then(() => {
+                          setSuccess(`🗑️ ${selectedFiles.length} file(s) deleted successfully`);
+                          exitSelectMode();
+                          fetchFilesAndFolders();
+                        }).catch(() => setError('Failed to delete some files'));
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Delete
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <span className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  Click items or use the checkbox above to select all
+                </span>
+              )}
+            </div>
+
+            {/* Right: cancel */}
+            <button
+              onClick={exitSelectMode}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors flex-shrink-0 ${isDarkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'}`}
+            >
+              <X className="w-3.5 h-3.5" /> Cancel
+            </button>
           </div>
         </div>
 
@@ -957,65 +1504,135 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
             viewMode === 'grid' ? (
               <div className={`p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {/* FOLDERS */}
                   {(filteredData() as any).folders?.map((folder: Folder) => (
-                    <div key={`folder-${folder.id}`} className={`group border rounded-xl p-6 hover:shadow-md transition-all duration-200 ${isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-gray-500' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
+                    <div
+                      key={`folder-${folder.id}`}
+                      onClick={() => isSelectMode ? toggleFolderSelection(folder.id) : undefined}
+                      className={`group relative border rounded-xl p-5 hover:shadow-md transition-all duration-200 cursor-pointer
+                        ${isSelectMode && selectedFolders.includes(folder.id)
+                          ? isDarkMode ? 'border-blue-500 bg-blue-900/20' : 'border-blue-500 bg-blue-50'
+                          : isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-gray-500' : 'bg-white border-gray-200 hover:border-gray-300'
+                        }`}>
+                      {/* Checkbox overlay — select mode only */}
+                      {isSelectMode && (
+                        <div className="absolute top-3 left-3 z-10" onClick={e => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedFolders.includes(folder.id)}
+                            onChange={() => toggleFolderSelection(folder.id)}
+                            className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+                          />
+                        </div>
+                      )}
                       <div className="flex items-center justify-between mb-4">
-                        <div className={`p-3 rounded-lg cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-yellow-50'}`} onDoubleClick={() => handleFolderDoubleClick(folder)}>
+                        <div
+                          className={`p-3 rounded-lg ${isSelectMode ? 'ml-6' : ''} ${isDarkMode ? 'bg-gray-600' : 'bg-yellow-50'}`}
+                          onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}>
                           <Folder className={isDarkMode ? 'w-6 h-6 text-yellow-400' : 'w-6 h-6 text-yellow-600'} />
                         </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {hasPermission(CategoryPermissions.EDIT_FOLDER)   && <button onClick={() => openModal('edit',   'folder', folder)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Edit3  className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>}
-                          {hasPermission(CategoryPermissions.DELETE_FOLDER) && <button onClick={() => openModal('delete', 'folder', folder)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400'  : 'text-gray-400 hover:text-red-600'}`}  /></button>}
-                        </div>
+                        {!isSelectMode && (
+                          <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {hasPermission(CategoryPermissions.EDIT_FOLDER) && (
+                              <button onClick={e => { e.stopPropagation(); openModal('edit', 'folder', folder); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Edit">
+                                <Edit3 className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} />
+                              </button>
+                            )}
+                            {hasPermission(CategoryPermissions.DELETE_FOLDER) && (
+                              <button onClick={e => { e.stopPropagation(); openModal('delete', 'folder', folder); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Delete">
+                                <Trash2 className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-red-400' : 'text-gray-400 hover:text-red-600'}`} />
+                              </button>
+                            )}
+                            {String(folder.created_by) === String(CURRENT_USER_ID) && (
+                              <button onClick={e => { e.stopPropagation(); openMoveModalForItem({ id: folder.id, name: folder.name, type: 'folder' }); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Move">
+                                <Move className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} />
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <h3 className={`font-semibold mb-2 group-hover:text-blue-600 cursor-pointer ${isDarkMode ? 'text-white' : 'text-gray-900'}`} onDoubleClick={() => handleFolderDoubleClick(folder)}>{folder.name}</h3>
-                      <p className={`text-sm mb-4 line-clamp-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{folder.description}</p>
-                      <div className={`text-sm mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{formatDate(folder.created_at)}</div>
+                      <h3 className={`font-semibold mb-1 group-hover:text-blue-600 cursor-pointer truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`} onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}>{folder.name}</h3>
+                      <p className={`text-sm mb-3 line-clamp-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{folder.description}</p>
                       <div className={`pt-3 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-100'}`}>
-                        <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Created by <span className="font-medium">{folder.created_by_name || 'Unknown'}</span></div>
+                        <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{formatDate(folder.created_at)}</div>
+                        <div className={`text-xs mt-0.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>By <span className="font-medium">{folder.created_by_name || 'Unknown'}</span></div>
                       </div>
                     </div>
                   ))}
 
+                  {/* FILES */}
                   {(filteredData() as any).files?.map((file: FileItem) => (
-                    <div key={`file-${file.id}`} className={`group border rounded-xl p-6 hover:shadow-md transition-all duration-200 cursor-pointer ${isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-gray-500' : 'bg-white border-gray-200 hover:border-gray-300'}`} onClick={() => handleViewFile(file)}>
-                      <div className="flex items-center justify-between mb-4">
-                        <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-600' : 'bg-blue-50'}`}>{getFileTypeIcon(file.file_type)}</div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {(isPDFFile(file.file_type) || isImageFile(file.file_type)) && hasPermission(CategoryPermissions.PREVIEW_FILES) && (
-                            <button onClick={e => { e.stopPropagation(); handlePreviewFile(file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Preview"><Eye className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>
-                          )}
-                          {hasPermission(CategoryPermissions.EDIT) && (
-                            <button onClick={e => { e.stopPropagation(); openRenameModal(file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Rename"><Edit3 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-yellow-400' : 'text-gray-400 hover:text-yellow-600'}`} /></button>
-                          )}
-                          <button onClick={e => { e.stopPropagation(); handleStarFile(e, file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title={file.is_starred ? 'Unstar' : 'Star'}>
-                            {file.is_starred ? <Star className="w-4 h-4 text-yellow-500 fill-current" /> : <StarOff className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-yellow-400' : 'text-gray-400 hover:text-yellow-500'}`} />}
-                          </button>
-                          {hasPermission(CategoryPermissions.SHARE_FILES) && isFileOwner(file, CURRENT_USER_ID) && (
-                            <button onClick={e => { e.stopPropagation(); setSelectedFileForShares(file); setShowShareModal(true); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Share"><Share2 className="w-4 h-4 text-blue-500" /></button>
-                          )}
-                          {hasPermission(CategoryPermissions.DOWNLOAD_FILES) && (
-                            <button onClick={e => { e.stopPropagation(); handleDownloadFile(file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Download"><Download className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-green-400' : 'text-gray-400 hover:text-green-600'}`} /></button>
-                          )}
-                          {hasPermission(CategoryPermissions.DELETE_FILE) && (
-                            <button onClick={e => { e.stopPropagation(); openModal('delete', 'file', file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Delete"><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400' : 'text-gray-400 hover:text-red-600'}`} /></button>
-                          )}
+                    <div
+                      key={`file-${file.id}`}
+                      onClick={() => isSelectMode ? toggleFileSelection(file.id) : handleViewFile(file)}
+                      className={`group relative border rounded-xl p-5 hover:shadow-md transition-all duration-200 cursor-pointer
+                        ${isSelectMode && selectedFiles.includes(file.id)
+                          ? isDarkMode ? 'border-blue-500 bg-blue-900/20' : 'border-blue-500 bg-blue-50'
+                          : isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-gray-500' : 'bg-white border-gray-200 hover:border-gray-300'
+                        }`}>
+                      {/* Checkbox overlay — select mode only */}
+                      {isSelectMode && (
+                        <div className="absolute top-3 left-3 z-10" onClick={e => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedFiles.includes(file.id)}
+                            onChange={() => toggleFileSelection(file.id)}
+                            className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+                          />
                         </div>
+                      )}
+                      <div className="flex items-center justify-between mb-4">
+                        <div className={`p-3 rounded-lg ${isSelectMode ? 'ml-6' : ''} ${isDarkMode ? 'bg-gray-600' : 'bg-blue-50'}`}>
+                          {getFileTypeIcon(file.file_type)}
+                        </div>
+                        {!isSelectMode && (
+                          <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {hasPermission(CategoryPermissions.EDIT) && (
+                              <button onClick={e => { e.stopPropagation(); openRenameModal(file); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Rename">
+                                <Edit3 className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-yellow-400' : 'text-gray-400 hover:text-yellow-600'}`} />
+                              </button>
+                            )}
+                            <button onClick={e => { e.stopPropagation(); handleStarFile(e, file); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title={file.is_starred ? 'Unstar' : 'Star'}>
+                              {file.is_starred ? <Star className="w-3.5 h-3.5 text-yellow-500 fill-current" /> : <StarOff className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-yellow-400' : 'text-gray-400 hover:text-yellow-500'}`} />}
+                            </button>
+                            {hasPermission(CategoryPermissions.SHARE_FILES) && isFileOwner(file, CURRENT_USER_ID) && (
+                              <button onClick={e => { e.stopPropagation(); setSelectedFileForShares(file); setShowShareModal(true); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Share">
+                                <Share2 className="w-3.5 h-3.5 text-blue-500" />
+                              </button>
+                            )}
+                            {hasPermission(CategoryPermissions.DOWNLOAD_FILES) && (
+                              <button onClick={e => { e.stopPropagation(); handleDownloadFile(file); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Download">
+                                <Download className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-green-400' : 'text-gray-400 hover:text-green-600'}`} />
+                              </button>
+                            )}
+                            {hasPermission(CategoryPermissions.DELETE_FILE) && (
+                              <button onClick={e => { e.stopPropagation(); openModal('delete', 'file', file); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Delete">
+                                <Trash2 className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-red-400' : 'text-gray-400 hover:text-red-600'}`} />
+                              </button>
+                            )}
+                            {String(file.created_by) === String(CURRENT_USER_ID) && (
+                              <button onClick={e => { e.stopPropagation(); openMoveModalForItem({ id: file.id, name: file.name, type: 'file' }); }} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Move">
+                                <Move className={`w-3.5 h-3.5 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} />
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-2 mb-1">
                         <h3 className={`font-semibold truncate flex-1 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{file.name}</h3>
-                        {file.is_starred && <Star className="w-4 h-4 text-yellow-500 fill-current flex-shrink-0" />}
+                        {file.is_starred && <Star className="w-3.5 h-3.5 text-yellow-500 fill-current flex-shrink-0" />}
                       </div>
-                      <p className={`text-sm mb-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{file.formatted_size} • {file.file_type.toUpperCase()}</p>
-                      <div className={`text-sm mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{formatDate(file.created_at)}</div>
+                      <p className={`text-xs mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{file.formatted_size} • {file.file_type.toUpperCase()}</p>
                       <div className={`pt-3 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-100'}`}>
-                        <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Created by <span className="font-medium">{file.created_by_name || 'Unknown'}</span></div>
+                        <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{formatDate(file.created_at)}</div>
+                        <div className={`text-xs mt-0.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>By <span className="font-medium">{file.created_by_name || 'Unknown'}</span></div>
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
             ) : (
+              /* ── LIST VIEW ── */
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead className={`${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-200'} border-b`}>
@@ -1026,12 +1643,14 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                     </tr>
                   </thead>
                   <tbody className={`divide-y ${isDarkMode ? 'divide-gray-700' : 'divide-gray-100'}`}>
+                    {/* FOLDER ROWS */}
                     {(filteredData() as any).folders?.map((folder: Folder) => (
                       <tr key={`folder-${folder.id}`} className={`transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
                         <td className="p-4">
                           <div className="flex items-center gap-3">
-                            <div className={`p-2 rounded-lg cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-yellow-50'}`} onDoubleClick={() => handleFolderDoubleClick(folder)}><Folder className={isDarkMode ? 'w-5 h-5 text-yellow-400' : 'w-5 h-5 text-yellow-600'} /></div>
-                            <div className={`font-medium cursor-pointer ${isDarkMode ? 'text-white hover:text-blue-400' : 'text-gray-900 hover:text-blue-600'}`} onDoubleClick={() => handleFolderDoubleClick(folder)}>{folder.name}</div>
+                            {isSelectMode && <input type="checkbox" checked={selectedFolders.includes(folder.id)} onChange={() => toggleFolderSelection(folder.id)} className="w-4 h-4 rounded accent-blue-600 cursor-pointer" onClick={e => e.stopPropagation()} />}
+                            <div className={`p-2 rounded-lg cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-yellow-50'}`} onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}><Folder className={isDarkMode ? 'w-5 h-5 text-yellow-400' : 'w-5 h-5 text-yellow-600'} /></div>
+                            <div className={`font-medium cursor-pointer ${isDarkMode ? 'text-white hover:text-blue-400' : 'text-gray-900 hover:text-blue-600'}`} onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}>{folder.name}</div>
                           </div>
                         </td>
                         <td className={`p-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Folder</td>
@@ -1039,17 +1658,27 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                         <td className={`p-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{formatDate(folder.created_at)}</td>
                         <td className={`p-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{folder.created_by_name || 'Unknown'}</td>
                         <td className="p-4">
-                          <div className="flex items-center gap-1">
-                            {hasPermission(CategoryPermissions.EDIT_FOLDER)   && <button onClick={() => openModal('edit',   'folder', folder)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Edit3  className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>}
-                            {hasPermission(CategoryPermissions.DELETE_FOLDER) && <button onClick={() => openModal('delete', 'folder', folder)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400'  : 'text-gray-400 hover:text-red-600'}`}  /></button>}
-                          </div>
+                          {!isSelectMode && (
+                            <div className="flex items-center gap-1">
+                              {hasPermission(CategoryPermissions.EDIT_FOLDER)   && <button onClick={() => openModal('edit',   'folder', folder)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Edit3  className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>}
+                              {hasPermission(CategoryPermissions.DELETE_FOLDER) && <button onClick={() => openModal('delete', 'folder', folder)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400'  : 'text-gray-400 hover:text-red-600'}`}  /></button>}
+                              {String(folder.created_by) === String(CURRENT_USER_ID) && (
+                                <button onClick={() => openMoveModalForItem({ id: folder.id, name: folder.name, type: 'folder' })} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Move">
+                                  <Move className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} />
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
+
+                    {/* FILE ROWS — FIX 2: Clock (version history) button added here to match grid view */}
                     {(filteredData() as any).files?.map((file: FileItem) => (
-                      <tr key={`file-${file.id}`} className={`transition-colors cursor-pointer ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`} onClick={() => handleViewFile(file)}>
+                      <tr key={`file-${file.id}`} className={`transition-colors cursor-pointer ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`} onClick={() => !isSelectMode && handleViewFile(file)}>
                         <td className="p-4">
                           <div className="flex items-center gap-3">
+                            {isSelectMode && <input type="checkbox" checked={selectedFiles.includes(file.id)} onChange={() => toggleFileSelection(file.id)} className="w-4 h-4 rounded accent-blue-600 cursor-pointer" onClick={e => e.stopPropagation()} />}
                             <div className={`p-2 rounded-lg ${isDarkMode ? 'bg-gray-600' : 'bg-blue-50'}`}>{getFileTypeIcon(file.file_type)}</div>
                             <div className="flex items-center gap-2">
                               <div className={`font-medium truncate max-w-xs ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{file.name}</div>
@@ -1062,23 +1691,29 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                         <td className={`p-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{formatDate(file.created_at)}</td>
                         <td className={`p-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{file.created_by_name || 'Unknown'}</td>
                         <td className="p-4" onClick={e => e.stopPropagation()}>
-                          <div className="flex items-center gap-1">
-                            {(isPDFFile(file.file_type) || isImageFile(file.file_type)) && hasPermission(CategoryPermissions.PREVIEW_FILES) && (
-                              <button onClick={e => { e.stopPropagation(); handlePreviewFile(file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Preview"><Eye className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>
-                            )}
-                            <button onClick={e => { e.stopPropagation(); handleStarFile(e, file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title={file.is_starred ? 'Unstar' : 'Star'}>
-                              {file.is_starred ? <Star className="w-4 h-4 text-yellow-600 fill-current" /> : <StarOff className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-yellow-400' : 'text-gray-400 hover:text-yellow-600'}`} />}
-                            </button>
-                            {hasPermission(CategoryPermissions.SHARE_FILES) && isFileOwner(file, CURRENT_USER_ID) && (
-                              <button onClick={e => { e.stopPropagation(); setSelectedFileForShares(file); setShowShareModal(true); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Share"><Share2 className="w-4 h-4 text-blue-500" /></button>
-                            )}
-                            {hasPermission(CategoryPermissions.DOWNLOAD_FILES) && (
-                              <button onClick={e => { e.stopPropagation(); handleDownloadFile(file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Download"><Download className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-green-400' : 'text-gray-400 hover:text-green-600'}`} /></button>
-                            )}
-                            {hasPermission(CategoryPermissions.DELETE_FILE) && (
-                              <button onClick={e => { e.stopPropagation(); openModal('delete', 'file', file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Delete"><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400' : 'text-gray-400 hover:text-red-600'}`} /></button>
-                            )}
-                          </div>
+                          {!isSelectMode && (
+                            <div className="flex items-center gap-1">
+                              <button onClick={e => { e.stopPropagation(); handleStarFile(e, file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title={file.is_starred ? 'Unstar' : 'Star'}>
+                                {file.is_starred ? <Star className="w-4 h-4 text-yellow-600 fill-current" /> : <StarOff className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-yellow-400' : 'text-gray-400 hover:text-yellow-600'}`} />}
+                              </button>
+                              {hasPermission(CategoryPermissions.SHARE_FILES) && isFileOwner(file, CURRENT_USER_ID) && (
+                                <button onClick={e => { e.stopPropagation(); setSelectedFileForShares(file); setShowShareModal(true); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Share"><Share2 className="w-4 h-4 text-blue-500" /></button>
+                              )}
+                              {hasPermission(CategoryPermissions.DOWNLOAD_FILES) && (
+                                <button onClick={e => { e.stopPropagation(); handleDownloadFile(file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Download"><Download className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-green-400' : 'text-gray-400 hover:text-green-600'}`} /></button>
+                              )}
+                              {hasPermission(CategoryPermissions.DELETE_FILE) && (
+                                <button onClick={e => { e.stopPropagation(); openModal('delete', 'file', file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Delete"><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400' : 'text-gray-400 hover:text-red-600'}`} /></button>
+                              )}
+                              {String(file.created_by) === String(CURRENT_USER_ID) && (
+                                <button onClick={e => { e.stopPropagation(); openMoveModalForItem({ id: file.id, name: file.name, type: 'file' }); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Move">
+                                  <Move className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} />
+                                </button>
+                              )}
+                              {/* FIX 2: Version history button — now present in list view too */}
+                              <button onClick={e => { e.stopPropagation(); openVersionModal(file); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`} title="Version History"><Clock className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-purple-400' : 'text-gray-400 hover:text-purple-600'}`} /></button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1141,7 +1776,6 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                 <button onClick={closeModal} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}><X className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} /></button>
               </div>
 
-              {/* Modal-level error */}
               {modalError && (
                 <div className={`mb-4 p-3 border rounded-lg flex items-start gap-2 ${isDarkMode ? 'bg-red-900 border-red-700' : 'bg-red-50 border-red-200'}`}>
                   <AlertCircle className={`w-5 h-5 flex-shrink-0 mt-0.5 ${isDarkMode ? 'text-red-400' : 'text-red-600'}`} />
@@ -1296,7 +1930,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
 
         {/* ── SHARE MODAL ── */}
         {showShareModal && selectedFileForShares && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className={`text-lg font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Share: {selectedFileForShares.name}</h3>
@@ -1355,7 +1989,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
 
         {/* ── MANAGE SHARES MODAL ── */}
         {showManageSharesModal && selectedFileForShares && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className={`text-lg font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Manage Access: {selectedFileForShares.name}</h3>
@@ -1407,72 +2041,184 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
 
         {/* ── FILE VIEWER ── */}
         {showFileViewer && viewingFile && (
-          <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
-            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col`}>
-              <div className={`flex items-center justify-between p-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  <div className={`p-2 rounded-lg ${isDarkMode ? 'bg-gray-700' : 'bg-blue-50'}`}>{getFileTypeIcon(viewingFile.file_type)}</div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className={`text-lg font-semibold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{viewingFile.name}</h3>
-                    <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{viewingFile.formatted_size} • {viewingFile.file_type.toUpperCase()}</p>
-                  </div>
+          <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#1a1a1a' }}>
+
+            {/* ── Top Bar ── */}
+            <div className="flex items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-700 flex-shrink-0">
+              {/* Left: file icon + name + size */}
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 bg-red-600 rounded flex items-center justify-center flex-shrink-0">
+                  {getFileTypeIcon(viewingFile.file_type)}
                 </div>
-                <div className="flex items-center gap-2">
-                  {(isPDFFile(viewingFile.file_type) || isImageFile(viewingFile.file_type)) && (
-                    <button onClick={() => handlePreviewFile(viewingFile)} className={`p-2 rounded-lg ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="Open in new tab"><Eye className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`} /></button>
-                  )}
-                  <button onClick={e => handleStarFile(e, viewingFile)} className={`p-2 rounded-lg ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title={viewingFile.is_starred ? 'Unstar' : 'Star'}>
-                    {viewingFile.is_starred ? <Star className="w-5 h-5 text-yellow-600 fill-current" /> : <StarOff className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`} />}
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate text-white leading-tight">{viewingFile.name}</p>
+                  <p className="text-xs text-gray-400 leading-tight">
+                    {viewingFile.formatted_size} • {viewingFile.file_type.toUpperCase()}
+                  </p>
+                </div>
+              </div>
+
+              {/* Right: action buttons */}
+              <div className="flex items-center gap-1 flex-shrink-0 ml-4">
+                {/* Star */}
+                <button
+                  onClick={e => handleStarFile(e, viewingFile)}
+                  title={viewingFile.is_starred ? 'Remove from Starred' : 'Add to Starred'}
+                  className={`p-2 rounded-lg transition-colors ${
+                    viewingFile.is_starred
+                      ? 'text-yellow-400 hover:text-yellow-300'
+                      : 'text-gray-400 hover:text-yellow-400 hover:bg-gray-700'
+                  }`}
+                >
+                  <Star className={`w-5 h-5 ${viewingFile.is_starred ? 'fill-current' : ''}`} />
+                </button>
+
+                {/* Share */}
+                {hasPermission(CategoryPermissions.SHARE_FILES) && isFileOwner(viewingFile, CURRENT_USER_ID) && (
+                  <button
+                    onClick={() => { setSelectedFileForShares(viewingFile); setShowShareModal(true); }}
+                    title="Share"
+                    className="p-2 rounded-lg text-gray-400 hover:text-blue-400 hover:bg-gray-700 transition-colors"
+                  >
+                    <Share2 className="w-5 h-5" />
                   </button>
-                  {hasPermission(CategoryPermissions.SHARE_FILES) && isFileOwner(viewingFile, CURRENT_USER_ID) && (
-                    <button onClick={() => { setSelectedFileForShares(viewingFile); setShowShareModal(true); }} className={`p-2 rounded-lg ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="Share"><Share2 className="w-5 h-5 text-blue-600" /></button>
-                  )}
-                  <button onClick={() => handleDownloadFile(viewingFile)} className={`p-2 rounded-lg ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="Download"><Download className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`} /></button>
-                  <button onClick={closeFileViewer} className={`p-2 rounded-lg ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}><X className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`} /></button>
-                </div>
-              </div>
-              <div className={`flex-1 overflow-auto ${isDarkMode ? 'bg-gray-900' : 'bg-gray-50'} p-6`}>
-                {isImageFile(viewingFile.file_type) ? (
-                  <div className="flex items-center justify-center h-full">
-                    <img src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`} alt={viewingFile.name} className="max-w-full max-h-full object-contain rounded-lg shadow-lg" />
-                  </div>
-                ) : isPDFFile(viewingFile.file_type) ? (
-                  <div className="h-full"><iframe src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`} className="w-full h-full rounded-lg shadow-lg" title={viewingFile.name} /></div>
-                ) : isVideoFile(viewingFile.file_type) ? (
-                  <div className="flex items-center justify-center h-full">
-                    <video controls className="max-w-full max-h-full rounded-lg shadow-lg" src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}>Your browser does not support video.</video>
-                  </div>
-                ) : isAudioFile(viewingFile.file_type) ? (
-                  <div className="flex items-center justify-center h-full">
-                    <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-lg p-8 max-w-md w-full`}>
-                      <audio controls className="w-full" src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}>Your browser does not support audio.</audio>
-                    </div>
-                  </div>
-                ) : isTextFile(viewingFile.file_type) ? (
-                  <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-lg p-6 h-full overflow-auto`}>
-                    <iframe src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`} className="w-full h-full border-0" title={viewingFile.name} />
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center h-full">
-                    <div className="text-center">
-                      <div className={`p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-full mx-auto mb-4 w-20 h-20 flex items-center justify-center`}><File className={`w-10 h-10 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`} /></div>
-                      <h4 className={`text-lg font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Preview not available</h4>
-                      <p className={`mb-6 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>This file type cannot be previewed.</p>
-                      <button onClick={() => handleDownloadFile(viewingFile)} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 inline-flex items-center gap-2"><Download className="w-4 h-4" /> Download</button>
-                    </div>
-                  </div>
                 )}
+
+                {/* Download */}
+                {hasPermission(CategoryPermissions.DOWNLOAD_FILES) && (
+                  <button
+                    onClick={() => handleDownloadFile(viewingFile)}
+                    title="Download"
+                    className="p-2 rounded-lg text-gray-400 hover:text-green-400 hover:bg-gray-700 transition-colors"
+                  >
+                    <Download className="w-5 h-5" />
+                  </button>
+                )}
+
+                {/* Delete */}
+                {hasPermission(CategoryPermissions.DELETE_FILE) && (
+                  <button
+                    onClick={() => { closeFileViewer(); openModal('delete', 'file', viewingFile); }}
+                    title="Delete"
+                    className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-700 transition-colors"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                )}
+
+                {/* Divider */}
+                <div className="w-px h-5 bg-gray-600 mx-1" />
+
+                {/* Close */}
+                <button
+                  onClick={closeFileViewer}
+                  className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-              <div className={`border-t ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'} p-4`}>
-                <div className={`flex items-center justify-between text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  <div className="flex items-center gap-6">
-                    <div><span className="font-medium">By:</span> {viewingFile.created_by_name || 'Unknown'}</div>
-                    <div><span className="font-medium">Downloads:</span> {viewingFile.download_count}</div>
+            </div>
+
+            {/* ── Meta strip ── */}
+            <div className="flex items-center justify-between px-4 py-2 bg-gray-800 text-xs text-gray-400 flex-shrink-0 border-b border-gray-700">
+              <span>By: <span className="text-gray-300 font-medium">{viewingFile.created_by_name || 'Unknown'}</span></span>
+              <span>Downloads: <span className="text-gray-300 font-medium">{viewingFile.download_count}</span></span>
+            </div>
+
+            {/* ── Content Area ── */}
+            <div className="flex-1 overflow-hidden bg-gray-700 flex items-center justify-center">
+              {isImageFile(viewingFile.file_type) ? (
+                <img
+                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  alt={viewingFile.name}
+                  className="max-w-full max-h-full object-contain"
+                />
+              ) : isPDFFile(viewingFile.file_type) ? (
+                <iframe
+                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  className="w-full h-full border-0"
+                  title={viewingFile.name}
+                />
+              ) : isVideoFile(viewingFile.file_type) ? (
+                <video
+                  controls
+                  className="max-w-full max-h-full"
+                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                >
+                  Your browser does not support video.
+                </video>
+              ) : isAudioFile(viewingFile.file_type) ? (
+                <div className="bg-gray-800 rounded-lg shadow-lg p-8 max-w-md w-full">
+                  <audio
+                    controls
+                    className="w-full"
+                    src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  >
+                    Your browser does not support audio.
+                  </audio>
+                </div>
+              ) : isTextFile(viewingFile.file_type) ? (
+                <iframe
+                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  className="w-full h-full border-0 bg-white"
+                  title={viewingFile.name}
+                />
+              ) : (
+                <div className="text-center">
+                  <div className="w-20 h-20 bg-gray-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                    <File className="w-10 h-10 text-gray-400" />
                   </div>
-                  {hasPermission(CategoryPermissions.DELETE_FILE) && (
-                    <button onClick={() => { closeFileViewer(); openModal('delete', 'file', viewingFile); }} className="px-3 py-1.5 text-red-600 hover:bg-red-50 rounded-lg inline-flex items-center gap-1"><Trash2 className="w-4 h-4" /> Delete</button>
+                  <h4 className="text-lg font-semibold text-white mb-2">Preview Not Available</h4>
+                  <p className="text-gray-400 text-sm mb-6 max-w-xs">This file type cannot be previewed in the browser.</p>
+                  {hasPermission(CategoryPermissions.DOWNLOAD_FILES) && (
+                    <button
+                      onClick={() => handleDownloadFile(viewingFile)}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                    >
+                      <Download className="w-4 h-4" /> Download to View
+                    </button>
                   )}
                 </div>
+              )}
+            </div>
+
+          </div>
+        )}
+
+        {/* ── UPLOAD CONFLICT MODAL ── */}
+        {showUploadConflictModal && uploadConflict && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg max-w-md w-full p-6`}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>File Already Exists</h3>
+                <button onClick={() => { setShowUploadConflictModal(false); setUploadConflict(null); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}><X className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} /></button>
+              </div>
+              <div className={`mb-6 p-4 rounded-lg ${isDarkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
+                <p className={`text-sm mb-3 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  A file named <span className="font-semibold">"{uploadConflict.uploaded_file?.original_name}"</span> already exists at this location.
+                </p>
+                <div className={`text-xs space-y-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  <div>Existing size: {((uploadConflict.existing_file?.file_size || 0) / 1024).toFixed(1)} KB</div>
+                  <div>New file size: {((uploadConflict.uploaded_file?.file_size || 0) / 1024).toFixed(1)} KB</div>
+                </div>
+              </div>
+              <p className={`text-sm font-medium mb-4 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>What would you like to do?</p>
+              <div className="space-y-3">
+                <button onClick={() => handleResolveUploadConflict('overwrite')} disabled={submitting}
+                  className="w-full px-4 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 text-left">
+                  <div className="font-medium">Overwrite</div>
+                  <div className="text-xs opacity-80">Replace the existing file. Previous version will be saved.</div>
+                </button>
+                <button onClick={() => handleResolveUploadConflict('version')} disabled={submitting}
+                  className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-left">
+                  <div className="font-medium">Save as New Version</div>
+                  <div className="text-xs opacity-80">Keep both — new file saved with a version number.</div>
+                </button>
+                <button onClick={() => handleResolveUploadConflict('skip')} disabled={submitting}
+                  className={`w-full px-4 py-3 rounded-lg disabled:opacity-50 text-left border ${isDarkMode ? 'border-gray-600 hover:bg-gray-700 text-gray-300' : 'border-gray-300 hover:bg-gray-50 text-gray-700'}`}>
+                  <div className="font-medium">Skip</div>
+                  <div className="text-xs opacity-60">Cancel this upload. Existing file unchanged.</div>
+                </button>
               </div>
             </div>
           </div>
@@ -1507,6 +2253,269 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── MOVE MODAL ── */}
+        {showMoveModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col`}>
+            <div className={`flex items-center justify-between p-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+              <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Move {moveItems.length} item(s)</h3>
+              <button onClick={() => setShowMoveModal(false)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}><X className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+
+              {/* Category selector */}
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Category</label>
+                <select
+                  value={moveTargetCategoryId || ''}
+                  onChange={async e => {
+                    const id = Number(e.target.value);
+                    setMoveTargetCategoryId(id);
+                    setMoveTargetFolderId(null);
+                    setMoveTargetFolderName('Home (root)');
+                    const roots = await loadFolderTree(id, null);
+                    setFolderTree(roots);
+                  }}
+                  className={`w-full px-3 py-2 border rounded-lg ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}>
+                  {allCategories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+
+              {/* Destination folder tree */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Destination Folder</label>
+                  <button
+                    onClick={() => setShowInlineFolderCreate(v => !v)}
+                    className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
+                    <FolderPlus className="w-3 h-3" /> New Folder
+                  </button>
+                </div>
+
+                {/* Inline folder create */}
+                {showInlineFolderCreate && (
+                  <div className="flex gap-2 mb-3">
+                    <input
+                      value={inlineFolderName}
+                      onChange={e => setInlineFolderName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') createInlineFolder(); if (e.key === 'Escape') { setShowInlineFolderCreate(false); setInlineFolderName(''); } }}
+                      placeholder={`New folder inside "${moveTargetFolderName}"`}
+                      autoFocus
+                      className={`flex-1 px-3 py-1.5 border rounded-lg text-sm ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900'}`}
+                    />
+                    <button
+                      onClick={createInlineFolder}
+                      disabled={!inlineFolderName.trim()}
+                      className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700 disabled:opacity-50">
+                      Create
+                    </button>
+                    <button
+                      onClick={() => { setShowInlineFolderCreate(false); setInlineFolderName(''); }}
+                      className={`px-2 py-1.5 rounded-lg text-sm ${isDarkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'}`}>
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Home (root) row */}
+                <button
+                  onClick={() => selectMoveDestination(null, 'Home (root)', moveTargetCategoryId!)}
+                  className={`w-full text-left px-3 py-2 rounded-lg mb-1 flex items-center gap-2 text-sm ${moveTargetFolderId === null ? 'bg-blue-600 text-white' : isDarkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-50 text-gray-700'}`}>
+                  <Home className="w-4 h-4" /> Home (root)
+                </button>
+
+                {/* Recursive folder tree */}
+                {folderTree.map(folder => (
+                  <MoveTreeNode
+                    key={folder.id}
+                    folder={folder}
+                    depth={0}
+                    selectedFolderId={moveTargetFolderId}
+                    moveItemIds={moveItems.filter(i => i.type === 'folder').map(i => i.id)}
+                    isDarkMode={isDarkMode}
+                    categoryMoveApi={CATEGORY_MOVE_API}
+                    onSelect={(folderId, folderName, categoryId) => selectMoveDestination(folderId, folderName, categoryId)}
+                  />
+                ))}
+              </div>
+
+              {/* Conflict preview */}
+              {movePreviewConflicts.length > 0 && (
+                <div className={`p-3 rounded-lg border ${isDarkMode ? 'bg-yellow-900 border-yellow-700' : 'bg-yellow-50 border-yellow-200'}`}>
+                  <p className={`text-sm font-medium mb-1 ${isDarkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>⚠️ {movePreviewConflicts.length} conflict(s) detected</p>
+                  <p className={`text-xs ${isDarkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>You'll be asked how to handle them on the next step.</p>
+                </div>
+              )}
+
+              {/* Items being moved */}
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Moving</label>
+                <div className={`max-h-32 overflow-y-auto rounded-lg border ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
+                  {moveItems.map(item => (
+                    <div key={`${item.type}-${item.id}`} className={`flex items-center gap-2 px-3 py-2 text-sm border-b last:border-b-0 ${isDarkMode ? 'border-gray-600 text-gray-300' : 'border-gray-100 text-gray-700'}`}>
+                      {item.type === 'folder' ? <Folder className="w-4 h-4 text-yellow-500" /> : <File className="w-4 h-4 text-blue-500" />}
+                      {item.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className={`p-4 border-t flex gap-3 justify-end ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+              <button onClick={() => setShowMoveModal(false)} className={`px-4 py-2 rounded-lg ${isDarkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-600 hover:bg-gray-100'}`}>Cancel</button>
+              <button
+                onClick={handleMoveConfirm}
+                disabled={moveLoading || moveTargetCategoryId === null}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
+                {moveLoading && <Loader className="w-4 h-4 animate-spin" />} Move Here
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+        {/* ── CONFLICT MODAL ── */}
+        {showConflictModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col`}>
+              <div className={`flex items-center justify-between p-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Resolve Conflicts</h3>
+                <button onClick={() => setShowConflictModal(false)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}><X className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                <div className="flex gap-2 mb-4 items-center">
+                  <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Apply to all:</span>
+                  {(['overwrite','version','skip'] as const).map(s => (
+                    <button key={s} onClick={() => applyAllConflicts(s)} className={`px-2 py-1 text-xs rounded border capitalize ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}>{s}</button>
+                  ))}
+                </div>
+                {pendingConflicts.map(conflict => (
+                  <div key={conflict.id} className={`p-3 rounded-lg border mb-3 ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
+                    <p className={`text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>"{conflict.name}"</p>
+                    <div className="flex gap-2">
+                      {(['overwrite','version','skip'] as const).map(s => (
+                        <button key={s} onClick={() => setConflictDecisions(prev => ({ ...prev, [conflict.id]: s }))}
+                          className={`px-3 py-1 text-xs rounded-lg capitalize ${conflictDecisions[conflict.id] === s ? 'bg-blue-600 text-white' : isDarkMode ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className={`p-4 border-t flex gap-3 justify-end ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <button onClick={() => { setShowConflictModal(false); setShowMoveModal(true); }} className={`px-4 py-2 rounded-lg ${isDarkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-600 hover:bg-gray-100'}`}>Back</button>
+                <button onClick={() => executeMove('version')} disabled={moveLoading}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
+                  {moveLoading && <Loader className="w-4 h-4 animate-spin" />} Confirm Move
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── HISTORY MODAL ── */}
+        {showHistoryModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col`}>
+              <div className={`flex items-center justify-between p-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Move History</h3>
+                <button onClick={() => setShowHistoryModal(false)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}><X className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {historyLoading ? (
+                  <div className="flex justify-center py-8"><Loader className="w-6 h-6 animate-spin text-blue-600" /></div>
+                ) : moveHistory.length === 0 ? (
+                  <p className={`text-center py-8 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>No move history yet.</p>
+                ) : (
+                  moveHistory.map(batch => (
+                    <div key={batch.batch_id} className={`mb-3 border rounded-lg overflow-hidden ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
+                      <div className={`flex items-center justify-between p-3 cursor-pointer ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-50 hover:bg-gray-100'}`}
+                        onClick={() => setExpandedBatch(expandedBatch === batch.batch_id ? null : batch.batch_id)}>
+                        <div>
+                          <p className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{batch.item_count} item(s) moved</p>
+                          <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{new Date(batch.moved_at).toLocaleString()}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {batch.can_undo && (
+                            <button onClick={e => { e.stopPropagation(); handleUndoMove(batch.batch_id); }}
+                              className="flex items-center gap-1 px-2 py-1 text-xs bg-orange-500 text-white rounded hover:bg-orange-600">
+                              <RotateCcw className="w-3 h-3" /> Undo
+                            </button>
+                          )}
+                          {batch.undone && <span className="text-xs text-gray-400">Undone</span>}
+                          <ChevronRight className={`w-4 h-4 transition-transform ${expandedBatch === batch.batch_id ? 'rotate-90' : ''} ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                        </div>
+                      </div>
+                      {expandedBatch === batch.batch_id && (
+                        <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                          {batch.items.map((item: any) => (
+                            <div key={item.id} className={`flex items-center gap-2 px-4 py-2 text-xs border-t ${isDarkMode ? 'border-gray-600 text-gray-300' : 'border-gray-100 text-gray-600'}`}>
+                              {item.item_type === 'folder' ? <Folder className="w-3 h-3 text-yellow-500" /> : <File className="w-3 h-3 text-blue-500" />}
+                              <span className="flex-1 truncate">{item.item_name}</span>
+                              <span>{item.from_folder} → {item.to_folder}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── VERSION HISTORY MODAL ── */}
+        {showVersionModal && versionFile && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col`}>
+              <div className={`flex items-center justify-between p-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div>
+                  <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Version History</h3>
+                  <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{versionFile.name}</p>
+                </div>
+                <button onClick={() => setShowVersionModal(false)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}><X className={`w-5 h-5 ${isDarkMode ? 'text-white' : 'text-black'}`} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {versionsLoading ? (
+                  <div className="flex justify-center py-8"><Loader className="w-6 h-6 animate-spin text-blue-600" /></div>
+                ) : versions.length === 0 ? (
+                  <p className={`text-center py-8 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>No previous versions found.</p>
+                ) : (
+                  versions.map(v => (
+                    <div key={v.id} className={`p-3 rounded-lg border mb-3 ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`font-medium text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Version {v.version_number}</span>
+                        <div className="flex gap-2">
+                          <button onClick={() => handleRestoreVersion(versionFile.id, v.id)} className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
+                            <RotateCcw className="w-3 h-3" /> Restore
+                          </button>
+                          <button onClick={() => handleDeleteVersion(versionFile.id, v.id)} className="text-xs px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 flex items-center gap-1">
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{v.file_name}</p>
+                      <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{new Date(v.saved_at).toLocaleString()} · by {v.saved_by}</p>
+                      {v.notes && <p className={`text-xs mt-1 italic ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>{v.notes}</p>}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── UNDO TOAST ── */}
+        {undoToast?.visible && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 bg-gray-900 text-white rounded-lg shadow-xl">
+            <span className="text-sm">{undoToast.message}</span>
+            <button onClick={() => handleUndoMove(undoToast.batchId)} className="px-3 py-1 bg-orange-500 hover:bg-orange-600 rounded text-sm font-medium">Undo</button>
+            <button onClick={() => setUndoToast(null)} className="p-1 hover:bg-gray-700 rounded"><X className="w-4 h-4" /></button>
           </div>
         )}
 

@@ -1006,9 +1006,7 @@ router.post('/files/upload-single', uploadSingle('file'), async (req, res) => {
     const uploadedFile = req.file;
 
     if (!category_id || !created_by) {
-      if (uploadedFile) {
-        await cleanupFiles([uploadedFile]);
-      }
+      if (uploadedFile) await cleanupFiles([uploadedFile]);
       return res.status(400).json({ error: "category_id and created_by are required" });
     }
 
@@ -1029,16 +1027,52 @@ router.post('/files/upload-single', uploadSingle('file'), async (req, res) => {
     }
 
     if (folder_id) {
-      const [folderRows] = await inhouseDb.query("SELECT id FROM categories_folders WHERE id = ? AND category_id = ?", [folder_id, category_id]);
+      const [folderRows] = await inhouseDb.query(
+        "SELECT id FROM categories_folders WHERE id = ? AND category_id = ?",
+        [folder_id, category_id]
+      );
       if (folderRows.length === 0) {
         await cleanupFiles([uploadedFile]);
         return res.status(400).json({ error: "Invalid folder_id for this category" });
       }
     }
 
+    const sanitizedOriginalName = sanitizeInput(uploadedFile.originalname);
+
+    // ✅ NEW: Check for duplicate file name at destination
+    const conflictQuery = folder_id
+      ? "SELECT id, name, file_path, file_size FROM categories_files WHERE name = ? AND folder_id = ? AND is_active = 1"
+      : "SELECT id, name, file_path, file_size FROM categories_files WHERE name = ? AND folder_id IS NULL AND category_id = ? AND is_active = 1";
+    const conflictParams = folder_id
+      ? [sanitizedOriginalName, folder_id]
+      : [sanitizedOriginalName, category_id];
+
+    const [existing] = await inhouseDb.query(conflictQuery, conflictParams);
+
+    if (existing.length > 0) {
+      // Return 409 with conflict details — keep temp file for resolve step
+      return res.status(409).json({
+        conflict: true,
+        message: `A file named "${sanitizedOriginalName}" already exists at this location.`,
+        existing_file: {
+          id: existing[0].id,
+          name: existing[0].name,
+          file_size: existing[0].file_size
+        },
+        uploaded_file: {
+          temp_path: uploadedFile.path,
+          original_name: sanitizedOriginalName,
+          file_size: uploadedFile.size,
+          mime_type: uploadedFile.mimetype,
+          file_type: path.extname(uploadedFile.originalname).substring(1).toLowerCase()
+        },
+        available_strategies: ['overwrite', 'version', 'skip'],
+        context: { category_id, folder_id: folder_id || null, created_by }
+      });
+    }
+
+    // No conflict — normal insert
     try {
-      const sanitizedOriginalName = sanitizeInput(uploadedFile.originalname);
-      
       const [result] = await inhouseDb.query(
         `INSERT INTO categories_files 
         (name, original_name, description, file_type, file_size, mime_type, file_path, category_id, folder_id, 
@@ -1058,7 +1092,7 @@ router.post('/files/upload-single', uploadSingle('file'), async (req, res) => {
         ]
       );
 
-      await addActivityLog(created_by, 'upload', 'file', result.insertId, sanitizedOriginalName, 
+      await addActivityLog(created_by, 'upload', 'file', result.insertId, sanitizedOriginalName,
         `Size: ${formatFileSize(uploadedFile.size)}, Type: ${uploadedFile.mimetype}`);
 
       res.status(201).json({
@@ -1081,10 +1115,221 @@ router.post('/files/upload-single', uploadSingle('file'), async (req, res) => {
 
   } catch (error) {
     console.error("Error uploading file:", error);
-    if (req.file) {
-      await cleanupFiles([req.file]);
-    }
+    if (req.file) await cleanupFiles([req.file]);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ================== Resolve Upload Conflict ==================
+// POST /files/upload/resolve
+// Body: { strategy, temp_path, original_name, file_size, mime_type, file_type,
+//         existing_file_id, category_id, folder_id, created_by, description }
+router.post('/files/upload/resolve', async (req, res) => {
+  console.log("\n⚡ ===== RESOLVE UPLOAD CONFLICT =====");
+  console.log("Body:", req.body);
+
+  const {
+    strategy,
+    temp_path,
+    original_name,
+    file_size,
+    mime_type,
+    file_type,
+    existing_file_id,
+    category_id,
+    folder_id,
+    created_by,
+    description = ''
+  } = req.body;
+
+  try {
+    if (!strategy || !['overwrite', 'version', 'skip'].includes(strategy)) {
+      return res.status(400).json({ error: "strategy must be overwrite, version, or skip" });
+    }
+    if (!created_by) return res.status(400).json({ error: "created_by is required" });
+    if (!category_id) return res.status(400).json({ error: "category_id is required" });
+
+    const userValid = await validateUser(created_by);
+    if (!userValid) return res.status(400).json({ error: "Invalid created_by user" });
+
+    // ── SKIP ──
+    if (strategy === 'skip') {
+      // Delete temp file
+      if (temp_path && fs.existsSync(temp_path)) {
+        try { fs.unlinkSync(temp_path); } catch (e) { console.warn('Could not delete temp file:', e.message); }
+      }
+      return res.json({ message: "Upload skipped", skipped: true, original_name });
+    }
+
+    // For overwrite/version we need the existing file
+    if (!existing_file_id) return res.status(400).json({ error: "existing_file_id is required for overwrite/version" });
+    if (!temp_path) return res.status(400).json({ error: "temp_path is required" });
+
+    const [existingRows] = await inhouseDb.query(
+      "SELECT * FROM categories_files WHERE id = ? AND is_active = 1",
+      [existing_file_id]
+    );
+    if (existingRows.length === 0) {
+      return res.status(404).json({ error: "Existing file not found" });
+    }
+    const existingFile = existingRows[0];
+
+    if (!fs.existsSync(temp_path)) {
+      return res.status(400).json({ error: "Temp file no longer exists — please re-upload" });
+    }
+
+    // ── OVERWRITE ──
+    if (strategy === 'overwrite') {
+      // Snapshot existing file as a version first
+      const [maxVersionRows] = await inhouseDb.query(
+        'SELECT MAX(version_number) as max_version FROM file_versions WHERE category_file_id = ?',
+        [existing_file_id]
+      );
+      const nextVersion = (maxVersionRows[0].max_version || 0) + 1;
+
+      await inhouseDb.query(
+        `INSERT INTO file_versions 
+         (category_file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          existing_file_id,
+          nextVersion,
+          existingFile.name,
+          existingFile.file_path,
+          existingFile.file_size,
+          existingFile.file_type,
+          existingFile.folder_id || null,
+          created_by,
+          `Overwritten by re-upload on ${new Date().toISOString()}`
+        ]
+      );
+
+      // Delete old physical file (if different from temp)
+      if (existingFile.file_path && existingFile.file_path !== temp_path) {
+        const oldPaths = [
+          existingFile.file_path,
+          path.join(process.cwd(), existingFile.file_path)
+        ];
+        for (const p of oldPaths) {
+          if (fs.existsSync(p)) {
+            try { fs.unlinkSync(p); console.log('🗑️ Deleted old physical file:', p); } catch (e) { console.warn('Could not delete old file:', e.message); }
+            break;
+          }
+        }
+      }
+
+      // Update existing row with new file data
+      await inhouseDb.query(
+        `UPDATE categories_files 
+         SET file_path = ?, file_size = ?, file_type = ?, mime_type = ?,
+             description = ?, updated_by = ?, updated_at = NOW()
+         WHERE id = ?`,
+        [temp_path, file_size, file_type, mime_type, description, created_by, existing_file_id]
+      );
+
+      await addActivityLog(created_by, 'update', 'file', existing_file_id, existingFile.name,
+        `Overwritten by re-upload. Previous version saved as v${nextVersion}.`
+      );
+
+      return res.json({
+        message: `File overwritten. Previous version saved as version ${nextVersion}.`,
+        strategy: 'overwrite',
+        file: {
+          file_id: existing_file_id,
+          name: existingFile.name,
+          previous_version_saved: nextVersion
+        }
+      });
+    }
+
+    // ── VERSION ──
+    if (strategy === 'version') {
+      const sanitizedName = sanitizeInput(original_name);
+      const ext = path.extname(sanitizedName);
+      const baseName = path.basename(sanitizedName, ext);
+
+      // Get next version number
+      const [maxVersionRows] = await inhouseDb.query(
+        'SELECT MAX(version_number) as max_version FROM file_versions WHERE category_file_id = ?',
+        [existing_file_id]
+      );
+      const nextVersion = (maxVersionRows[0].max_version || 0) + 1;
+
+      const versionedFileName = `${baseName} (Version ${nextVersion})${ext}`;
+
+      // Rename temp file to versioned name on disk
+      const versionedPhysicalName = `${Date.now()}-${versionedFileName.replace(/[^a-zA-Z0-9.\-()]/g, '_')}`;
+      const versionedFilePath = path.join('uploads', versionedPhysicalName);
+      const resolvedVersionedPath = path.join(process.cwd(), versionedFilePath);
+
+      if (fs.existsSync(temp_path)) {
+        try {
+          await fs.promises.rename(temp_path, resolvedVersionedPath);
+          console.log('✅ Temp file renamed to versioned path:', resolvedVersionedPath);
+        } catch (renameErr) {
+          console.warn('Rename failed, using original temp path:', renameErr.message);
+        }
+      }
+
+      const finalPath = fs.existsSync(resolvedVersionedPath) ? versionedFilePath : temp_path;
+
+      // Insert new file row with versioned name
+      const [result] = await inhouseDb.query(
+        `INSERT INTO categories_files 
+         (name, original_name, description, file_type, file_size, mime_type, file_path, category_id, folder_id,
+          is_starred, is_active, download_count, last_accessed, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, NOW(), ?, NOW(), NOW())`,
+        [
+          versionedFileName,
+          versionedFileName,
+          description,
+          file_type,
+          file_size,
+          mime_type,
+          finalPath,
+          category_id,
+          folder_id || null,
+          created_by
+        ]
+      );
+
+      // Save version record linked to the existing file
+      await inhouseDb.query(
+        `INSERT INTO file_versions 
+         (category_file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          existing_file_id,
+          nextVersion,
+          versionedFileName,
+          finalPath,
+          file_size,
+          file_type,
+          folder_id || null,
+          created_by,
+          `Version ${nextVersion} — uploaded alongside existing file`
+        ]
+      );
+
+      await addActivityLog(created_by, 'upload', 'file', result.insertId, versionedFileName,
+        `Saved as version ${nextVersion} of file ID ${existing_file_id}`
+      );
+
+      return res.json({
+        message: `File saved as "${versionedFileName}" (version ${nextVersion}).`,
+        strategy: 'version',
+        file: {
+          file_id: result.insertId,
+          name: versionedFileName,
+          version_number: nextVersion,
+          original_file_id: existing_file_id
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error("💥 Error resolving upload conflict:", error);
+    return res.status(500).json({ error: "Failed to resolve conflict: " + error.message });
   }
 });
 
@@ -2886,6 +3131,232 @@ router.get('/files/:id/download', async (req, res) => {
   } catch (error) {
     console.error('Error downloading file:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ================== Get Category File Version History ==================
+// GET /files/:id/versions
+router.get('/files/:id/versions', async (req, res) => {
+  console.log('\n📋 ===== GET CATEGORY FILE VERSION HISTORY =====');
+  const { id } = req.params;
+
+  try {
+    if (!id || isNaN(id)) return res.status(400).json({ error: "Valid file ID is required" });
+
+    const [files] = await inhouseDb.query(
+      `SELECT f.*, cf.name AS folder_name 
+       FROM categories_files f 
+       LEFT JOIN categories_folders cf ON f.folder_id = cf.id 
+       WHERE f.id = ?`,
+      [id]
+    );
+    if (files.length === 0) return res.status(404).json({ error: "File not found" });
+
+    const currentFile = files[0];
+
+    const [versions] = await inhouseDb.query(
+      `SELECT fv.*, u.name AS created_by_name, cf.name AS moved_from_folder_name
+       FROM file_versions fv
+       LEFT JOIN users u ON fv.created_by = u.id
+       LEFT JOIN categories_folders cf ON fv.moved_from_folder_id = cf.id
+       WHERE fv.category_file_id = ?
+       ORDER BY fv.version_number DESC`,
+      [id]
+    );
+
+    return res.json({
+      message: `Version history for "${currentFile.name}"`,
+      current_file: {
+        id: currentFile.id,
+        name: currentFile.name,
+        size: currentFile.file_size,
+        type: currentFile.file_type,
+        folder: currentFile.folder_name || 'root',
+        updated_at: currentFile.updated_at
+      },
+      versions: versions.map(v => ({
+        id: v.id,
+        version_number: v.version_number,
+        file_name: v.file_name,
+        file_size: v.file_size,
+        file_type: v.file_type,
+        moved_from_folder: v.moved_from_folder_name || 'root',
+        saved_by: v.created_by_name,
+        saved_at: v.created_at,
+        notes: v.notes
+      })),
+      total_versions: versions.length
+    });
+
+  } catch (err) {
+    console.error('💥 Error getting category file version history:', err);
+    return res.status(500).json({ error: 'Failed to get version history: ' + err.message });
+  }
+});
+
+// ================== Restore a Category File Version ==================
+// POST /files/versions/:id/restore/:versionId
+router.post('/files/versions/:id/restore/:versionId', async (req, res) => {
+  console.log('\n🔄 ===== RESTORE CATEGORY FILE VERSION =====');
+  const { id, versionId } = req.params;
+  const { restored_by } = req.body;
+
+  try {
+    if (!restored_by) return res.status(400).json({ error: "restored_by is required" });
+
+    const userValid = await validateUser(restored_by);
+    if (!userValid) return res.status(400).json({ error: "Invalid restored_by user" });
+
+    const [files] = await inhouseDb.query(
+      "SELECT * FROM categories_files WHERE id = ?", [id]
+    );
+    if (files.length === 0) return res.status(404).json({ error: "File not found" });
+    const currentFile = files[0];
+
+    const [versions] = await inhouseDb.query(
+      "SELECT * FROM file_versions WHERE id = ? AND category_file_id = ?",
+      [versionId, id]
+    );
+    if (versions.length === 0) return res.status(404).json({ error: "Version not found" });
+    const versionToRestore = versions[0];
+
+    // Verify version file exists on disk
+    let versionFilePath = versionToRestore.file_path;
+    let found = false;
+    const pathVariations = [
+      versionToRestore.file_path,
+      path.resolve(versionToRestore.file_path),
+      path.join(process.cwd(), versionToRestore.file_path),
+      path.join(process.cwd(), 'uploads', path.basename(versionToRestore.file_path))
+    ];
+    for (const p of pathVariations) {
+      if (fs.existsSync(p)) { versionFilePath = p; found = true; break; }
+    }
+    if (!found) {
+      return res.status(404).json({ error: "Version file not found on disk — cannot restore", stored_path: versionToRestore.file_path });
+    }
+
+    // Snapshot current file before overwriting
+    const [maxVersionRows] = await inhouseDb.query(
+      'SELECT MAX(version_number) as max_version FROM file_versions WHERE category_file_id = ?', [id]
+    );
+    const snapshotVersion = (maxVersionRows[0].max_version || 0) + 1;
+
+    await inhouseDb.query(
+      `INSERT INTO file_versions 
+       (category_file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, snapshotVersion, currentFile.name, currentFile.file_path,
+        currentFile.file_size, currentFile.file_type, currentFile.folder_id || null,
+        restored_by, `Auto-snapshot before restoring version ${versionToRestore.version_number}`
+      ]
+    );
+
+    // Update current file with version content
+    await inhouseDb.query(
+      `UPDATE categories_files 
+       SET file_path = ?, file_size = ?, file_type = ?, updated_by = ?, updated_at = NOW() 
+       WHERE id = ?`,
+      [versionToRestore.file_path, versionToRestore.file_size, versionToRestore.file_type, restored_by, id]
+    );
+
+    // Remove restored version from file_versions
+    await inhouseDb.query("DELETE FROM file_versions WHERE id = ?", [versionId]);
+
+    await addActivityLog(restored_by, 'update', 'file', currentFile.id, currentFile.name,
+      `Restored version ${versionToRestore.version_number}. Previous state saved as version ${snapshotVersion}.`
+    );
+
+    return res.json({
+      message: `Version ${versionToRestore.version_number} restored. Previous state saved as version ${snapshotVersion}.`,
+      restored: true,
+      file: {
+        id: currentFile.id,
+        name: currentFile.name,
+        restored_from_version: versionToRestore.version_number,
+        previous_state_saved_as_version: snapshotVersion
+      }
+    });
+
+  } catch (err) {
+    console.error('💥 Error restoring category file version:', err);
+    return res.status(500).json({ error: 'Version restore failed: ' + err.message });
+  }
+});
+
+// ================== Delete a Category File Version ==================
+// DELETE /files/versions/:id/version/:versionId
+router.delete('/files/versions/:id/version/:versionId', async (req, res) => {
+  console.log('\n🗑️ ===== DELETE CATEGORY FILE VERSION =====');
+  const { id, versionId } = req.params;
+  const { deleted_by } = req.body;
+
+  try {
+    if (!deleted_by) return res.status(400).json({ error: "deleted_by is required" });
+
+    const userValid = await validateUser(deleted_by);
+    if (!userValid) return res.status(400).json({ error: "Invalid deleted_by user" });
+
+    const [files] = await inhouseDb.query("SELECT * FROM categories_files WHERE id = ?", [id]);
+    if (files.length === 0) return res.status(404).json({ error: "File not found" });
+    const currentFile = files[0];
+
+    const [versions] = await inhouseDb.query(
+      "SELECT * FROM file_versions WHERE id = ? AND category_file_id = ?",
+      [versionId, id]
+    );
+    if (versions.length === 0) return res.status(404).json({ error: "Version not found" });
+    const version = versions[0];
+
+    const [versionCount] = await inhouseDb.query(
+      'SELECT COUNT(*) as count FROM file_versions WHERE category_file_id = ?', [id]
+    );
+
+    // Delete DB record
+    await inhouseDb.query("DELETE FROM file_versions WHERE id = ?", [versionId]);
+
+    // Delete physical file only if path differs from current live file
+    let physicalFileDeleted = false;
+    const versionPathNorm = path.resolve(version.file_path);
+    const currentPathNorm = path.resolve(currentFile.file_path);
+
+    if (versionPathNorm === currentPathNorm) {
+      console.log('⚠️ Version path matches live file — skipping physical delete');
+    } else {
+      const pathVariations = [
+        version.file_path,
+        path.resolve(version.file_path),
+        path.join(process.cwd(), version.file_path),
+        path.join(process.cwd(), 'uploads', path.basename(version.file_path))
+      ];
+      for (const p of pathVariations) {
+        if (fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+            physicalFileDeleted = true;
+            console.log('🗑️ Physical version file deleted:', p);
+          } catch (e) { console.warn('Could not delete version file:', e.message); }
+          break;
+        }
+      }
+    }
+
+    await addActivityLog(deleted_by, 'delete', 'file', currentFile.id, currentFile.name,
+      `Deleted version ${version.version_number}`
+    );
+
+    return res.json({
+      message: `Version ${version.version_number} deleted successfully.`,
+      deleted: true,
+      version: { id: version.id, version_number: version.version_number, file_name: version.file_name },
+      physical_file_deleted: physicalFileDeleted,
+      remaining_versions: versionCount[0].count - 1
+    });
+
+  } catch (err) {
+    console.error('💥 Error deleting category file version:', err);
+    return res.status(500).json({ error: 'Version delete failed: ' + err.message });
   }
 });
 

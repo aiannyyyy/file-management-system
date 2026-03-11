@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react'; // ← CHANGED: added useRef
 import { 
   Search, Filter, Grid3X3, List, Upload, FolderPlus,
   File, Folder, Image, FileText, Download, Share2, Trash2, Star,
   Clock, User, Calendar, ArrowUpDown, ChevronRight, Home, X,
-  AlertCircle, CheckCircle, Edit, Info, RefreshCw, Send, Mail
+  AlertCircle, CheckCircle, Edit, Info, RefreshCw, Send, Mail,
+  // ↓ NEW ICONS FOR MOVE FEATURE
+  Move, RotateCcw, History, ChevronDown, FolderOpen, AlertTriangle,
+  Copy, Layers, ArrowRight, Undo2, Loader
 } from 'lucide-react';
 import { useDarkMode } from '../contexts/DarkModeContext';
 import { useAuth, FilePermissions } from '../contexts/AuthContext';
@@ -74,6 +77,58 @@ interface FilesProps {
   currentUser: User;
 }
 
+// ↓↓↓ NEW INTERFACES FOR MOVE FEATURE ↓↓↓
+interface MoveItem {
+  id: string;
+  name: string;
+  type: 'file' | 'folder';
+}
+
+interface ConflictItem {
+  id: string;
+  name: string;
+  type: 'file' | 'folder';
+  conflicting_id: string;
+  conflicting_name?: string;
+}
+
+interface MovePreview {
+  can_move: MoveItem[];
+  conflicts: ConflictItem[];
+  errors: Array<{ id: string; name?: string; type: string; reason: string }>;
+  warnings: Array<{ id: string; name?: string; type: string; reason: string }>;
+}
+
+interface FolderNode {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  children?: FolderNode[];
+  isLoaded?: boolean;
+  isOpen?: boolean;
+}
+
+interface MoveHistoryBatch {
+  batch_id: string;
+  moved_at: string;
+  item_count: number;
+  can_undo: boolean;
+  undone: boolean;
+  undone_at: string | null;
+  expires_in: string;
+  items: Array<{
+    id: number;
+    item_type: string;
+    item_id: string;
+    item_name: string;
+    from_folder: string;
+    to_folder: string;
+    from_folder_id: string | null;
+    to_folder_id: string | null;
+  }>;
+}
+// ↑↑↑ END NEW INTERFACES ↑↑↑
+
 const Files: React.FC<FilesProps> = ({ currentUser }) => {
   const { isDarkMode } = useDarkMode();
   const { hasPermission } = useAuth();
@@ -143,8 +198,39 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
   const [filterTime, setFilterTime] = useState('all');
   const [filterSize, setFilterSize] = useState('all');
 
+  // ↓↓↓ NEW STATE FOR MOVE FEATURE ↓↓↓
+  const [showMoveModal, setShowMoveModal] = useState(false);
+  const [moveItems, setMoveItems] = useState<MoveItem[]>([]);
+  const [moveTargetFolderId, setMoveTargetFolderId] = useState<string | null>(null);
+  const [moveTargetFolderName, setMoveTargetFolderName] = useState<string>('Home (root)');
+  const [movePreview, setMovePreview] = useState<MovePreview | null>(null);
+  const [movePreviewLoading, setMovePreviewLoading] = useState(false);
+  const [isMoving, setIsMoving] = useState(false);
+  const [folderTree, setFolderTree] = useState<FolderNode[]>([]);
+  const [folderTreeLoading, setFolderTreeLoading] = useState(false);
+  const [showConflictModal, setShowConflictModal] = useState(false);
+  const [pendingConflicts, setPendingConflicts] = useState<ConflictItem[]>([]);
+  const [conflictDecisions, setConflictDecisions] = useState<Record<string, 'overwrite' | 'version' | 'skip'>>({});
+  const [conflictMovePayload, setConflictMovePayload] = useState<any>(null);
+  const [undoToast, setUndoToast] = useState<{ batchId: string; message: string; visible: boolean } | null>(null);
+  const undoToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [moveHistory, setMoveHistory] = useState<MoveHistoryBatch[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [expandedBatch, setExpandedBatch] = useState<string | null>(null);
+  const [draggedItem, setDraggedItem] = useState<MoveItem | null>(null);
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [showInlineFolderCreate, setShowInlineFolderCreate] = useState(false);
+  const [inlineFolderName, setInlineFolderName] = useState('');
+  const [isCreatingInlineFolder, setIsCreatingInlineFolder] = useState(false);
+  const [uploadConflict, setUploadConflict] = useState<any>(null);
+  const [showUploadConflictModal, setShowUploadConflictModal] = useState(false);
+  // ↑↑↑ END NEW STATE ↑↑↑
+
   const CURRENT_USER_ID = currentUser.id?.toString() || '1';
   const API_BASE = 'http://localhost:3002/api/files';
+  const MOVE_API = 'http://localhost:3002/api/move'; // ← NEW
   const isMainPage = currentFolder === null;
 
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -162,7 +248,6 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
   const isFileOwner = (file: FileItem, currentUserId: string): boolean =>
     String(file.created_by) === String(currentUserId);
 
-  // ── Auto-hide banners ──────────────────────────────────────────────────────
   useEffect(() => {
     if (error) { const t = setTimeout(() => setError(null), 5000); return () => clearTimeout(t); }
   }, [error]);
@@ -203,7 +288,6 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     else setFolderPath([{ name: 'Home', path: '/', id: null }]);
   }, [currentFolder]);
 
-  // ── Data loaders ──────────────────────────────────────────────────────────
   const loadFilesAndFolders = async () => {
     setLoading(true);
     setError(null);
@@ -283,7 +367,6 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     }
   };
 
-  // ── Computed lists ─────────────────────────────────────────────────────────
   const allItems = useMemo(() => {
     const folderItems: FileItem[] = folders.map(folder => ({
       ...folder,
@@ -345,7 +428,6 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     return filtered;
   }, [allItems, searchQuery, sortBy, sortOrder, filterType, filterTime, filterSize]);
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
   const formatFileSize = (bytes: number): string => {
     if (!bytes) return '0 Bytes';
     const k = 1024, sizes = ['Bytes','KB','MB','GB'];
@@ -407,7 +489,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(ft || ''))
       return <img src={url} alt={previewFile.name} className="max-w-full max-h-96 object-contain mx-auto" onLoad={() => setPreviewLoading(false)} onError={() => setPreviewLoading(false)} />;
     if (ft === 'pdf')
-      return <iframe src={url} className="w-full h-96 border-0" onLoad={() => setPreviewLoading(false)} />;
+      return <iframe src={url} className="w-full border-0" style={{ height: '80vh' }} onLoad={() => setPreviewLoading(false)} />;
     if (['txt','csv','json','xml','html','css','js','md'].includes(ft || ''))
       return <iframe src={url} className="w-full h-96 border border-gray-200 rounded" onLoad={() => setPreviewLoading(false)} />;
     return (
@@ -434,14 +516,6 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
 
   const handleUpload = async () => {
     if (!uploadFiles || uploadFiles.length === 0) { setError('Please select files to upload'); return; }
-    const dupes = Array.from(uploadFiles).filter(f => files.some(e => e.name?.toLowerCase() === f.name.toLowerCase()));
-    if (dupes.length > 0) {
-      const names = dupes.map(f => f.name).join(', ');
-      setError(dupes.length === 1
-        ? `A file named "${names}" already exists here. Please rename it or choose a different location.`
-        : `These files already exist here: ${names}. Please rename them or choose a different location.`);
-      return;
-    }
     setIsUploading(true); setError(null);
     try {
       const token = localStorage.getItem('token');
@@ -452,6 +526,18 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
         if (currentFolder) fd.append('folder_id', currentFolder);
         fd.append('created_by', CURRENT_USER_ID);
         const res = await fetch(`${API_BASE}/upload`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
+
+        // ── Handle conflict ──
+        if (res.status === 409) {
+          const conflictData = await res.json();
+          setIsUploading(false);
+          setShowUploadModal(false);
+          setUploadFiles(null);
+          setUploadConflict(conflictData);
+          setShowUploadConflictModal(true);
+          return;
+        }
+
         if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Upload failed'); }
         setSuccess(`✅ "${file.name}" uploaded successfully!`);
       } else {
@@ -470,6 +556,42 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
       setShowUploadModal(false); setUploadFiles(null); loadFilesAndFolders();
     } catch (err) { setError(err instanceof Error ? err.message : 'Upload failed'); }
     finally { setIsUploading(false); }
+  };
+
+  const handleResolveUploadConflict = async (strategy: 'overwrite' | 'version' | 'skip') => {
+    if (!uploadConflict) return;
+    setIsUploading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/upload/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          conflict_strategy: strategy,
+          temp_path: uploadConflict.uploaded_file.temp_path,
+          file_name: uploadConflict.uploaded_file.file_name,
+          file_size: uploadConflict.uploaded_file.file_size,
+          file_type: uploadConflict.uploaded_file.file_type,
+          folder_id: currentFolder,
+          created_by: CURRENT_USER_ID,
+          existing_file_id: uploadConflict.existing_file.id
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to resolve conflict');
+      setShowUploadConflictModal(false);
+      setUploadConflict(null);
+      loadFilesAndFolders();
+      setSuccess(
+        strategy === 'skip' ? '⏭️ Upload skipped.' :
+        strategy === 'overwrite' ? `✅ "${data.fileName}" overwritten successfully!` :
+        `✅ Saved as "${data.fileName}" (version ${data.versionNumber})!`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resolve conflict');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   // ── Create Folder ──────────────────────────────────────────────────────────
@@ -542,7 +664,6 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
         body: JSON.stringify({ ids: selectedFiles, updated_by: CURRENT_USER_ID, force: false })
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Failed to delete items'); }
-      const result = await res.json();
       setSuccess(`🗑️ ${selectedFiles.length} item(s) deleted successfully!`);
       setSelectedFiles([]); loadFilesAndFolders();
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to delete items'); }
@@ -612,8 +733,13 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
       });
       if (!res.ok) throw new Error('Failed to toggle star');
       const result = await res.json();
+
+      // ✅ Update the files list
       setFiles(prev => prev.map(f => f.id === file.id ? { ...f, isStarred: result.starred } : f));
-      // Clear star message immediately when toggling (replaces previous message)
+
+      // ✅ Update previewFile if it's the same file (so the star icon updates immediately in the modal)
+      setPreviewFile(prev => prev?.id === file.id ? { ...prev, isStarred: result.starred } : prev);
+
       setSuccess(result.starred
         ? `⭐ "${file.name}" added to Starred Files`
         : `"${file.name}" removed from Starred Files`
@@ -638,12 +764,23 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
   };
 
   const handleShare = async (useOutlook = false) => {
-    if (selectedFiles.length === 0) { setError('Please select at least one file to share'); return; }
-    if (selectedUsers.length === 0) { setError('Please select at least one user to share with'); return; }
+    if (selectedUsers.length === 0)    { setError('Please select at least one user to share with'); return; }
+    if (!selectedFileForShares)        { setError('No file selected for sharing'); return; }
+    if (selectedFileForShares.created_by.toString() !== CURRENT_USER_ID) {
+      setError('Only the file owner can share this file');
+      return;
+    }
 
     if (useOutlook) {
-      window.location.href = generateMailtoLink();
-      setShowShareModal(false); setSelectedUsers([]); setShareMessage(''); setSelectedFiles([]);
+      const emails  = selectedUsers.map(u => u.email).join(',');
+      const subject = encodeURIComponent(`Shared files from ${currentUser.name}`);
+      const body    = encodeURIComponent(`${shareMessage || `${currentUser.name} has shared the following file with you:`}\n\nFile: ${selectedFileForShares.name}\n\nPlease check your file sharing system for access.\n\nBest regards,\n${currentUser.name}`);
+      window.location.href = `mailto:${emails}?subject=${subject}&body=${body}`;
+      setShowShareModal(false);
+      setSelectedUsers([]);
+      setShareMessage('');
+      setSelectedFileForShares(null);
+      setUserSearchQuery('');
       setSuccess(`📧 Outlook opened — email drafted for ${selectedUsers.length} recipient${selectedUsers.length > 1 ? 's' : ''}!`);
       return;
     }
@@ -651,25 +788,24 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     setIsSharing(true);
     try {
       const token = localStorage.getItem('token');
-      const sharePromises = selectedFiles.map(async fileId => {
-        const file = allItems.find(i => i.id === fileId);
-        if (!file || file.type === 'folder') return;
-        const userIds = selectedUsers.map(u => Number(u.id));
-        const res = await fetch(`http://localhost:3002/api/share/files/${fileId}/share`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ userIds })
-        });
-        if (!res.ok) { const e = await res.json(); throw new Error(e.error || `Failed to share (Status: ${res.status})`); }
-        return res.json();
+      if (!token) throw new Error('Authentication token missing');
+      const res = await fetch(`http://localhost:3002/api/share/files/${selectedFileForShares.id}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ userIds: selectedUsers.map(u => u.id?.toString()) })
       });
-      await Promise.all(sharePromises);
-      const sharedCount = selectedFiles.filter(id => allItems.find(i => i.id === id)?.type === 'file').length;
+      if (!res.ok) throw new Error((await res.json()).error || `Failed to share file (${res.status})`);
+
       const names = selectedUsers.map(u => u.name).join(', ');
-      setSuccess(`✅ ${sharedCount} file${sharedCount > 1 ? 's' : ''} shared successfully with: ${names}`);
-      setShowShareModal(false); setSelectedUsers([]); setShareMessage(''); setSelectedFiles([]);
-    } catch (err) { setError('Failed to share files: ' + (err instanceof Error ? err.message : 'Unknown error')); }
-    finally { setIsSharing(false); }
+      setSuccess(`✅ "${selectedFileForShares.name}" shared successfully with: ${names}`);
+      setShowShareModal(false);
+      setSelectedUsers([]);
+      setShareMessage('');
+      setSelectedFileForShares(null);
+      setUserSearchQuery('');
+    } catch (err) {
+      setError('Failed to share file: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally { setIsSharing(false); }
   };
 
   // ── Manage Shares ──────────────────────────────────────────────────────────
@@ -699,17 +835,401 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
   const openManageSharesModal = (file: FileItem) => { setSelectedFileForShares(file); setShowManageSharesModal(true); loadFileShares(file.id); };
 
   // ── Navigation helpers ─────────────────────────────────────────────────────
-  const handleFolderClick = (folder: FileItem) => { if (folder.type === 'folder') setCurrentFolder(folder.id); };
-  const handleBreadcrumbClick = (item: BreadcrumbItem) => setCurrentFolder(item.id || null);
+  const handleFolderClick = (folder: FileItem) => {
+    if (folder.type === 'folder') {
+      exitSelectMode();
+      setCurrentFolder(folder.id);
+    }
+  };
+  const handleBreadcrumbClick = (item: BreadcrumbItem) => {
+    if (isSelectMode) return;
+    setCurrentFolder(item.id || null);
+  };
   const handleSort = (col: 'name' | 'date' | 'size') => {
     if (sortBy === col) setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
     else { setSortBy(col); setSortOrder('asc'); }
   };
-  const handleItemClick = (item: FileItem) => { if (item.type === 'folder') handleFolderClick(item); else handleFilePreview(item); };
-  const openRenameModal = (item: FileItem) => { setItemToRename(item); setNewName(item.name); setShowRenameModal(true); };
+  const handleItemClick = (item: FileItem) => {
+    if (isSelectMode) {
+      toggleFileSelection(item.id);
+      return; // ← block ALL navigation and preview in select mode
+    }
+    if (item.type === 'folder') handleFolderClick(item);
+    else handleFilePreview(item);
+  };
+  const openRenameModal = (item: FileItem) => {
+    if (!isFileOwner(item, CURRENT_USER_ID)) {
+      setError('You can only rename files you own.');
+      return;
+    }
+    setItemToRename(item); setNewName(item.name); setShowRenameModal(true);
+  };
   const refresh = () => { loadFilesAndFolders(); setSuccess('🔄 Files refreshed!'); };
   const handleFilePreview = (file: FileItem) => { setPreviewFile(file); setShowPreviewModal(true); };
-  const toggleFileSelection = (fileId: string) => setSelectedFiles(prev => prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]);
+  const toggleFileSelection = (fileId: string) => {
+    setSelectedFiles(prev => {
+      const next = prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId];
+      return next;
+    });
+  };
+
+  const exitSelectMode = () => {
+    setIsSelectMode(false);
+    setSelectedFiles([]);
+  };
+
+  // ↓↓↓ NEW MOVE FEATURE HANDLERS ↓↓↓
+
+  const openMoveModal = (items: MoveItem[]) => {
+    setMoveItems(items);
+    setMoveTargetFolderId(null);
+    setMoveTargetFolderName('Home (root)');
+    setMovePreview(null);
+    setShowMoveModal(true);
+    loadFolderTree();
+  };
+
+  const openMoveModalForSelected = () => {
+    const items = selectedFiles
+      .map(id => {
+        const item = allItems.find(i => i.id === id);
+        return item && isFileOwner(item, CURRENT_USER_ID) ? { id: item.id, name: item.name, type: item.type } : null;
+      })
+      .filter(Boolean) as MoveItem[];
+    if (items.length === 0) {
+      setError('You can only move files you own. None of the selected items belong to you.');
+      return;
+    }
+    const skipped = selectedFiles.length - items.length;
+    if (skipped > 0) setError(`${skipped} item(s) skipped — you can only move files you own.`);
+    openMoveModal(items);
+  };
+
+  const openMoveModalForItem = (item: FileItem) => {
+    openMoveModal([{ id: item.id, name: item.name, type: item.type }]);
+  };
+
+  const loadFolderTree = async () => {
+    setFolderTreeLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/list`, { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!res.ok) throw new Error('Failed to load folders');
+      const data = await res.json();
+      const rootFolders: FolderNode[] = (data.folders || []).map((f: any) => ({
+        id: String(f.id), name: f.name, parent_id: null, children: [], isLoaded: false, isOpen: false
+      }));
+      setFolderTree(rootFolders);
+    } catch (err) {
+      console.error('Error loading folder tree:', err);
+    } finally {
+      setFolderTreeLoading(false);
+    }
+  };
+
+  const loadFolderChildren = async (folderId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/list/${folderId}`, { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!res.ok) throw new Error('Failed to load subfolders');
+      const data = await res.json();
+      const children: FolderNode[] = (data.folders || []).map((f: any) => ({
+        id: String(f.id), name: f.name, parent_id: folderId, children: [], isLoaded: false, isOpen: false
+      }));
+      setFolderTree(prev => updateNodeInTree(prev, folderId, node => ({ ...node, children, isLoaded: true, isOpen: true })));
+    } catch (err) {
+      console.error('Error loading folder children:', err);
+    }
+  };
+
+  const updateNodeInTree = (
+    nodes: FolderNode[],
+    targetId: string,
+    updater: (n: FolderNode) => FolderNode
+  ): FolderNode[] =>
+    nodes.map(n =>
+      n.id === targetId
+        ? updater(n)
+        : { ...n, children: n.children ? updateNodeInTree(n.children, targetId, updater) : [] }
+    );
+
+  const toggleFolderInTree = (folderId: string, folderName: string, isOpen: boolean) => {
+    if (!isOpen) {
+      loadFolderChildren(folderId);
+    } else {
+      setFolderTree(prev => updateNodeInTree(prev, folderId, n => ({ ...n, isOpen: false })));
+    }
+  };
+
+  const selectDestination = async (folderId: string | null, folderName: string) => {
+    setMoveTargetFolderId(folderId);
+    setMoveTargetFolderName(folderName);
+    setMovePreview(null);
+    if (moveItems.length === 0) return;
+    setMovePreviewLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const fileIds = moveItems.filter(i => i.type === 'file').map(i => i.id);
+      const folderIds = moveItems.filter(i => i.type === 'folder').map(i => i.id);
+      const params = new URLSearchParams();
+      fileIds.forEach(id => params.append('file_ids', id));
+      folderIds.forEach(id => params.append('folder_ids', id));
+      if (folderId) params.append('target_folder_id', folderId);
+      const res = await fetch(`${MOVE_API}/preview?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Preview failed');
+      const data = await res.json();
+      setMovePreview(data.preview);
+    } catch (err) {
+      console.error('Error getting move preview:', err);
+    } finally {
+      setMovePreviewLoading(false);
+    }
+  };
+
+  const executeMove = async (conflictStrategy: string = 'ask') => {
+    if (moveItems.length === 0) return;
+    setIsMoving(true);
+    try {
+      const token = localStorage.getItem('token');
+      const fileIds = moveItems.filter(i => i.type === 'file').map(i => i.id);
+      const folderIds = moveItems.filter(i => i.type === 'folder').map(i => i.id);
+      let endpoint = `${MOVE_API}/bulk`;
+      let body: any = {
+        file_ids: fileIds,
+        folder_ids: folderIds,
+        target_folder_id: moveTargetFolderId || null,
+        moved_by: CURRENT_USER_ID,
+        conflict_strategy: conflictStrategy
+      };
+      if (moveItems.length === 1 && moveItems[0].type === 'folder' && fileIds.length === 0) {
+        endpoint = `${MOVE_API}/folder`;
+        body = { folder_id: folderIds[0], target_folder_id: moveTargetFolderId || null, moved_by: CURRENT_USER_ID, conflict_strategy: conflictStrategy };
+      }
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (res.status === 409 && data.conflict) {
+        setPendingConflicts(data.conflicts || []);
+        setConflictMovePayload({ endpoint, body });
+        setShowMoveModal(false);
+        setShowConflictModal(true);
+        setIsMoving(false);
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || 'Move failed');
+      const movedCount = (data.results?.moved_files?.length || 0) + (data.results?.moved_folders?.length || 0);
+      setShowMoveModal(false);
+      setSelectedFiles([]);
+      loadFilesAndFolders();
+      if (data.batch_id) {
+        showUndoToast(data.batch_id, `Moved ${movedCount} item${movedCount !== 1 ? 's' : ''} to "${moveTargetFolderName}"`);
+      } else {
+        setSuccess(`✅ Moved ${movedCount} item${movedCount !== 1 ? 's' : ''} to "${moveTargetFolderName}"`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Move failed');
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
+  const applyConflictDecision = (itemId: string, strategy: 'overwrite' | 'version' | 'skip') => {
+    setConflictDecisions(prev => ({ ...prev, [itemId]: strategy }));
+  };
+
+  const applyAllConflicts = (strategy: 'overwrite' | 'version' | 'skip') => {
+    const decisions: Record<string, 'overwrite' | 'version' | 'skip'> = {};
+    pendingConflicts.forEach(c => { decisions[c.id] = strategy; });
+    setConflictDecisions(decisions);
+  };
+
+  const confirmConflicts = async () => {
+    const undecided = pendingConflicts.filter(c => !conflictDecisions[c.id]);
+    if (undecided.length > 0) { setError(`Please choose a strategy for all ${undecided.length} remaining conflict(s)`); return; }
+    const allStrategies = new Set(Object.values(conflictDecisions));
+    if (allStrategies.size === 1) {
+      const strategy = [...allStrategies][0];
+      setShowConflictModal(false);
+      setConflictDecisions({});
+      await executeMove(strategy);
+    } else {
+      setShowConflictModal(false);
+      setIsMoving(true);
+      try {
+        const token = localStorage.getItem('token');
+        let totalMoved = 0;
+        let lastBatchId = '';
+        for (const [itemId, strategy] of Object.entries(conflictDecisions)) {
+          const item = moveItems.find(i => i.id === itemId);
+          if (!item) continue;
+          const body: any = {
+            file_ids: item.type === 'file' ? [itemId] : [],
+            folder_ids: item.type === 'folder' ? [itemId] : [],
+            target_folder_id: moveTargetFolderId || null,
+            moved_by: CURRENT_USER_ID,
+            conflict_strategy: strategy
+          };
+          const res = await fetch(`${MOVE_API}/bulk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify(body)
+          });
+          const data = await res.json();
+          if (res.ok) {
+            totalMoved += (data.results?.moved_files?.length || 0) + (data.results?.moved_folders?.length || 0);
+            if (data.batch_id) lastBatchId = data.batch_id;
+          }
+        }
+        setSelectedFiles([]);
+        loadFilesAndFolders();
+        if (lastBatchId) showUndoToast(lastBatchId, `Moved ${totalMoved} item${totalMoved !== 1 ? 's' : ''} to "${moveTargetFolderName}"`);
+        else setSuccess(`✅ Moved ${totalMoved} item${totalMoved !== 1 ? 's' : ''} to "${moveTargetFolderName}"`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Move failed');
+      } finally {
+        setIsMoving(false);
+        setConflictDecisions({});
+      }
+    }
+  };
+
+  const showUndoToast = (batchId: string, message: string) => {
+    if (undoToastTimer.current) clearTimeout(undoToastTimer.current);
+    setUndoToast({ batchId, message, visible: true });
+    undoToastTimer.current = setTimeout(() => setUndoToast(null), 8000);
+  };
+
+  const handleUndoMove = async (batchId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${MOVE_API}/undo/${batchId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ user_id: CURRENT_USER_ID })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Undo failed');
+      setUndoToast(null);
+      loadFilesAndFolders();
+      setSuccess(`↩️ Move undone — ${data.summary?.total_undone || 0} item(s) restored`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Undo failed');
+    }
+  };
+
+  const loadMoveHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${MOVE_API}/history?user_id=${CURRENT_USER_ID}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Failed to load history');
+      const data = await res.json();
+      setMoveHistory(data.history || []);
+    } catch (err) {
+      setError('Failed to load move history');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const openHistoryModal = () => { setShowHistoryModal(true); loadMoveHistory(); };
+
+  const handleCreateInlineFolder = async () => {
+    if (!inlineFolderName.trim()) return;
+    setIsCreatingInlineFolder(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          name: inlineFolderName.trim(),
+          parent_id: moveTargetFolderId || null,
+          created_by: CURRENT_USER_ID
+        })
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Failed to create folder'); }
+      const data = await res.json();
+      const newFolderId = String(data.folder?.id || data.id);
+      const newFolderName = inlineFolderName.trim();
+      // Refresh the folder tree and auto-select the new folder
+      await loadFolderTree();
+      await selectDestination(newFolderId, newFolderName);
+      setInlineFolderName('');
+      setShowInlineFolderCreate(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create folder');
+    } finally {
+      setIsCreatingInlineFolder(false);
+    }
+  };
+
+  const handleDragStart = (e: React.DragEvent, item: MoveItem) => {
+    e.dataTransfer.effectAllowed = 'move';
+    setDraggedItem(item);
+  };
+
+  const handleDragOver = (e: React.DragEvent, folderId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverFolderId(folderId);
+  };
+
+  const handleDragLeave = () => setDragOverFolderId(null);
+
+  const handleDrop = async (e: React.DragEvent, targetFolderId: string, targetFolderName: string) => {
+    e.preventDefault();
+    setDragOverFolderId(null);
+    if (!draggedItem) return;
+    if (draggedItem.type === 'folder' && draggedItem.id === targetFolderId) return;
+    setDraggedItem(null);
+    try {
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams();
+      params.append(draggedItem.type === 'file' ? 'file_ids' : 'folder_ids', draggedItem.id);
+      params.append('target_folder_id', targetFolderId);
+      const previewRes = await fetch(`${MOVE_API}/preview?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const previewData = await previewRes.json();
+      if (previewData.preview?.conflicts?.length > 0) {
+        setMoveItems([draggedItem]);
+        setMoveTargetFolderId(targetFolderId);
+        setMoveTargetFolderName(targetFolderName);
+        setMovePreview(previewData.preview);
+        setShowMoveModal(true);
+        loadFolderTree();
+      } else if (previewData.preview?.errors?.length > 0) {
+        setError(previewData.preview.errors.map((e: any) => e.reason).join(', '));
+      } else {
+        const moveRes = await fetch(`${MOVE_API}/bulk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            file_ids: draggedItem.type === 'file' ? [draggedItem.id] : [],
+            folder_ids: draggedItem.type === 'folder' ? [draggedItem.id] : [],
+            target_folder_id: targetFolderId,
+            moved_by: CURRENT_USER_ID,
+            conflict_strategy: 'skip'
+          })
+        });
+        const moveData = await moveRes.json();
+        if (!moveRes.ok) throw new Error(moveData.error || 'Move failed');
+        loadFilesAndFolders();
+        if (moveData.batch_id) showUndoToast(moveData.batch_id, `Moved "${draggedItem.name}" to "${targetFolderName}"`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Move failed');
+    }
+  };
+  // ↑↑↑ END NEW MOVE FEATURE HANDLERS ↑↑↑
 
   // ── RENDER ─────────────────────────────────────────────────────────────────
   return (
@@ -720,9 +1240,66 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
         <div className="mb-6">
           <div className="flex items-center justify-between mb-2">
             <h1 className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Files</h1>
-            <button onClick={refresh} className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${isDarkMode ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'}`}>
-              <RefreshCw className="w-4 h-4" /> Refresh
-            </button>
+            {/* ↓ CHANGED: wrapped in flex div, added History button */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={openHistoryModal}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${isDarkMode ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'}`}
+              >
+                <History className="w-4 h-4" /> History
+              </button>
+              <button onClick={refresh} className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${isDarkMode ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'}`}>
+                <RefreshCw className="w-4 h-4" /> Refresh
+              </button>
+            </div>
+            {/* Upload Conflict Modal */}
+            {showUploadConflictModal && uploadConflict && (
+              <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+                <div className={`w-full max-w-md rounded-2xl shadow-2xl overflow-hidden ${isDarkMode ? 'bg-gray-900 border border-gray-700' : 'bg-white border border-gray-200'}`}>
+                  <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-yellow-900' : 'bg-yellow-100'}`}>
+                        <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                      </div>
+                      <div>
+                        <h3 className={`font-semibold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>File Already Exists</h3>
+                        <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{uploadConflict.message}</p>
+                      </div>
+                    </div>
+                    <button onClick={() => { setShowUploadConflictModal(false); setUploadConflict(null); }}
+                      className={`p-2 rounded-lg ${isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-100'}`}>
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <div className="px-6 py-5 space-y-3">
+                    <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                      How would you like to handle <span className="font-semibold">"{uploadConflict.uploaded_file.file_name}"</span>?
+                    </p>
+                    <div className="grid grid-cols-3 gap-3">
+                      {([
+                        { key: 'overwrite' as const, label: 'Overwrite', desc: 'Replace existing file', icon: <Copy className="w-5 h-5" />, color: 'text-red-500', bg: isDarkMode ? 'hover:bg-red-900' : 'hover:bg-red-50', border: isDarkMode ? 'hover:border-red-700' : 'hover:border-red-300' },
+                        { key: 'version' as const,   label: 'New Version', desc: 'Save alongside as v2', icon: <Layers className="w-5 h-5" />, color: 'text-blue-500', bg: isDarkMode ? 'hover:bg-blue-900' : 'hover:bg-blue-50', border: isDarkMode ? 'hover:border-blue-700' : 'hover:border-blue-300' },
+                        { key: 'skip' as const,      label: 'Skip', desc: "Don't upload this file", icon: <X className="w-5 h-5" />, color: 'text-gray-500', bg: isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100', border: isDarkMode ? 'hover:border-gray-500' : 'hover:border-gray-300' },
+                      ]).map(s => (
+                        <button key={s.key} onClick={() => handleResolveUploadConflict(s.key)} disabled={isUploading}
+                          className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all disabled:opacity-50 ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'} ${s.bg} ${s.border}`}>
+                          <span className={s.color}>{s.icon}</span>
+                          <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{s.label}</span>
+                          <span className={`text-xs text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{s.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {isUploading && (
+                    <div className={`px-6 py-3 border-t flex items-center gap-2 ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />
+                      <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Processing…</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {/* ↑ END CHANGED */}
           </div>
           <nav className={`flex items-center space-x-2 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-4`}>
             {folderPath.map((crumb, i) => (
@@ -735,7 +1312,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </nav>
         </div>
 
-        {/* ── Success Banner ── */}
+        {/* Success Banner */}
         {success && (
           <div className={`border rounded-lg p-4 mb-6 flex items-center gap-3 transition-colors duration-200 ${isDarkMode ? 'bg-green-900 border-green-700' : 'bg-green-50 border-green-200'}`}>
             <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
@@ -744,7 +1321,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── Error Banner ── */}
+        {/* Error Banner */}
         {error && (
           <div className={`border rounded-lg p-4 mb-6 flex items-start gap-3 transition-colors duration-200 ${isDarkMode ? 'bg-red-900 border-red-700' : 'bg-red-50 border-red-200'}`}>
             <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
@@ -778,6 +1355,21 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                   <Upload className="w-4 h-4 mr-2 inline" /> Upload
                 </ProtectedButton>
               )}
+              {/* ↓ NEW: bulk Move button — only shows when items are selected */}
+              {/* Select mode toggle */}
+              {/* Select mode toggle — just one small button */}
+              <button
+                onClick={() => isSelectMode ? exitSelectMode() : setIsSelectMode(true)}
+                className={`flex items-center gap-2 px-4 py-2 border rounded-lg transition-colors ${
+                  isSelectMode
+                    ? isDarkMode ? 'border-blue-500 bg-blue-900 text-blue-300' : 'border-blue-400 bg-blue-50 text-blue-700'
+                    : isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <CheckCircle className="w-4 h-4" />
+                {isSelectMode ? 'Selecting' : 'Select'}
+              </button>
+              {/* ↑ END NEW */}
               <button onClick={() => setShowFolderModal(true)} className={`flex items-center gap-2 px-4 py-2 border rounded-lg transition-colors ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
                 <FolderPlus className="w-4 h-4" /> New Folder
               </button>
@@ -801,6 +1393,69 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
         </div>
 
         {/* Main Page Notice */}
+        {/* ── SELECTION ACTION BAR — slides in below toolbar when select mode is active ── */}
+        <div className={`transition-all duration-200 overflow-hidden ${isSelectMode ? 'max-h-20 mb-4' : 'max-h-0 mb-0'}`}>
+          <div className={`rounded-xl border px-4 py-3 flex items-center gap-3 ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} shadow-sm`}>
+            {/* Left: select all + count */}
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <input
+                type="checkbox"
+                checked={selectedFiles.length === filteredAndSortedFiles.length && filteredAndSortedFiles.length > 0}
+                onChange={e => {
+                  if (e.target.checked) setSelectedFiles(filteredAndSortedFiles.map(f => f.id));
+                  else setSelectedFiles([]);
+                }}
+                className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+              />
+              <span className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                {selectedFiles.length > 0 ? `${selectedFiles.length} selected` : 'Select all'}
+              </span>
+            </div>
+
+            {/* Divider */}
+            <div className={`w-px h-5 flex-shrink-0 ${isDarkMode ? 'bg-gray-600' : 'bg-gray-200'}`} />
+
+            {/* Middle: action buttons — only when something is selected */}
+            <div className="flex items-center gap-2 flex-1">
+              {selectedFiles.length > 0 ? (
+                <>
+                  <button
+                    onClick={openMoveModalForSelected}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                  >
+                    <Move className="w-3.5 h-3.5" /> Move
+                  </button>
+                  <button
+                    onClick={handleBulkDownload}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg transition-colors text-sm font-medium ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}
+                  >
+                    <Download className="w-3.5 h-3.5" /> Download
+                  </button>
+                  <button
+                    onClick={handleBulkDelete}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-sm font-medium"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </button>
+                </>
+              ) : (
+                <span className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  Click items or use the checkbox above to select all
+                </span>
+              )}
+            </div>
+
+            {/* Right: cancel */}
+            <button
+              onClick={exitSelectMode}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors flex-shrink-0 ${isDarkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'}`}
+            >
+              <X className="w-3.5 h-3.5" /> Cancel
+            </button>
+          </div>
+        </div>
+
+        {/* Main Page Notice */}
         {isMainPage && (
           <div className={`border rounded-lg p-4 mb-6 flex items-center gap-3 ${isDarkMode ? 'bg-blue-900 border-blue-700' : 'bg-blue-50 border-blue-200'}`}>
             <Info className={`w-5 h-5 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`} />
@@ -811,13 +1466,23 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── Share Modal ── */}
+        {/* Share Modal — UNCHANGED */}
         {showShareModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-6 w-full max-w-2xl`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className={`text-lg font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Share Files</h3>
-                <button onClick={() => { setShowShareModal(false); setSelectedUsers([]); setShareMessage(''); setUserSearchQuery(''); }}><X className="w-5 h-5" /></button>
+                <button
+                  onClick={() => {
+                    setShowShareModal(false);
+                    setSelectedUsers([]);
+                    setShareMessage('');
+                    setUserSearchQuery('');
+                    setSelectedFileForShares(null);
+                  }}
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
               <div className="space-y-4">
                 <div>
@@ -831,10 +1496,14 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                             <button onClick={() => removeUser(user.id!)} className="hover:bg-blue-200 rounded-full p-0.5"><X className="w-3 h-3" /></button>
                           </div>
                         ))}
-                        <input type="text" value={userSearchQuery} onChange={e => setUserSearchQuery(e.target.value)}
+                        <input
+                          type="text"
+                          value={userSearchQuery}
+                          onChange={e => setUserSearchQuery(e.target.value)}
                           onKeyDown={handleSearchKeyDown}
                           placeholder={selectedUsers.length === 0 ? 'Search by name, email, or department...' : ''}
-                          className={`flex-1 min-w-[200px] outline-none bg-transparent ${isDarkMode ? 'text-white placeholder-gray-400' : ''}`} />
+                          className={`flex-1 min-w-[200px] outline-none bg-transparent ${isDarkMode ? 'text-white placeholder-gray-400' : ''}`}
+                        />
                       </div>
                     </div>
                     {showUserDropdown && (
@@ -855,19 +1524,44 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                 </div>
                 <div>
                   <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Message (optional)</label>
-                  <textarea value={shareMessage} onChange={e => setShareMessage(e.target.value)} placeholder="Add a message..." rows={3}
-                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} />
+                  <textarea
+                    value={shareMessage}
+                    onChange={e => setShareMessage(e.target.value)}
+                    placeholder="Add a message..."
+                    rows={3}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                  />
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button onClick={() => { setShowShareModal(false); setSelectedUsers([]); setShareMessage(''); setUserSearchQuery(''); }} disabled={isSharing}
-                    className={`flex-1 px-4 py-2 border rounded-lg ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>Cancel</button>
-                  <button onClick={() => handleShare(true)} disabled={selectedUsers.length === 0}
-                    className="flex items-center gap-2 px-4 py-2 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <button
+                    onClick={() => {
+                      setShowShareModal(false);
+                      setSelectedUsers([]);
+                      setShareMessage('');
+                      setUserSearchQuery('');
+                      setSelectedFileForShares(null);
+                    }}
+                    disabled={isSharing}
+                    className={`flex-1 px-4 py-2 border rounded-lg ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleShare(true)}
+                    disabled={selectedUsers.length === 0}
+                    className="flex items-center gap-2 px-4 py-2 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
                     <Mail className="w-4 h-4" /> Open in Outlook
                   </button>
-                  <button onClick={() => handleShare(false)} disabled={selectedUsers.length === 0 || isSharing}
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {isSharing ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Sharing…</> : <><Send className="w-4 h-4" /> Share via System</>}
+                  <button
+                    onClick={() => handleShare(false)}
+                    disabled={selectedUsers.length === 0 || isSharing}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSharing
+                      ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Sharing…</>
+                      : <><Send className="w-4 h-4" /> Share via System</>
+                    }
                   </button>
                 </div>
               </div>
@@ -875,9 +1569,9 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── Manage Shares Modal ── */}
+        {/* Manage Shares Modal — UNCHANGED */}
         {showManageSharesModal && selectedFileForShares && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-6 w-full max-w-2xl`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className={`text-lg font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Manage Access: {selectedFileForShares.name}</h3>
@@ -914,20 +1608,12 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                     <p>This file is not shared with anyone yet</p>
                   </div>
                 )}
-                <div className={`flex gap-3 pt-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-                  <button onClick={() => { setShowManageSharesModal(false); setSelectedFiles([selectedFileForShares.id]); setShowShareModal(true); }}
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                    <Share2 className="w-4 h-4" /> Share with More Users
-                  </button>
-                  <button onClick={() => { setShowManageSharesModal(false); setSelectedFileForShares(null); setCurrentFileShares([]); }}
-                    className={`flex-1 px-4 py-2 border rounded-lg ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>Close</button>
-                </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* ── Files Content ── */}
+        {/* Files Content */}
         {loading ? (
           <div className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} rounded-lg shadow-sm border p-12 text-center`}>
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4" />
@@ -935,11 +1621,26 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         ) : (
           <div className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} rounded-lg shadow-sm border overflow-hidden`}>
+
+            {/* ── LIST VIEW ── */}
             {viewMode === 'list' ? (
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead className={`${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-200'} border-b`}>
                     <tr>
+                      <th className="w-10 p-3">
+                        {isSelectMode && (
+                          <input
+                            type="checkbox"
+                            checked={selectedFiles.length === filteredAndSortedFiles.length && filteredAndSortedFiles.length > 0}
+                            onChange={e => {
+                              if (e.target.checked) setSelectedFiles(filteredAndSortedFiles.map(f => f.id));
+                              else setSelectedFiles([]);
+                            }}
+                            className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+                          />
+                        )}
+                      </th>
                       {[['name','Name'],['date','Modified'],['size','Size']].map(([col,label]) => (
                         <th key={col} className="text-left p-3">
                           <button onClick={() => handleSort(col as any)} className={`flex items-center gap-1 text-sm font-medium ${isDarkMode ? 'text-gray-300 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}>
@@ -952,8 +1653,34 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                   </thead>
                   <tbody className={`divide-y ${isDarkMode ? 'divide-gray-700' : 'divide-gray-100'}`}>
                     {filteredAndSortedFiles.map(file => (
-                      <tr key={file.id} onClick={() => handleItemClick(file)}
-                        className={`transition-colors cursor-pointer ${selectedFiles.includes(file.id) ? isDarkMode ? 'bg-blue-900' : 'bg-blue-50' : isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
+                      // ↓ CHANGED: added drag/drop props + dragOver highlight
+                       <tr
+                        key={file.id}
+                        onClick={() => handleItemClick(file)}
+                        draggable={!isSelectMode && isFileOwner(file, CURRENT_USER_ID)}
+                        onDragStart={!isSelectMode && isFileOwner(file, CURRENT_USER_ID) ? e => handleDragStart(e, { id: file.id, name: file.name, type: file.type }) : undefined}
+                        onDragOver={!isSelectMode && file.type === 'folder' ? e => handleDragOver(e, file.id) : undefined}
+                        onDragLeave={!isSelectMode && file.type === 'folder' ? handleDragLeave : undefined}
+                        onDrop={!isSelectMode && file.type === 'folder' ? e => handleDrop(e, file.id, file.name) : undefined}
+                        className={`transition-colors cursor-pointer ${
+                          dragOverFolderId === file.id && file.type === 'folder'
+                            ? isDarkMode ? 'bg-blue-900 ring-2 ring-inset ring-blue-500' : 'bg-blue-50 ring-2 ring-inset ring-blue-400'
+                            : selectedFiles.includes(file.id)
+                              ? isDarkMode ? 'bg-blue-900' : 'bg-blue-50'
+                              : isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        <td className="p-3 w-10" onClick={e => e.stopPropagation()}>
+                          {isSelectMode && (
+                            <input
+                              type="checkbox"
+                              checked={selectedFiles.includes(file.id)}
+                              onChange={() => toggleFileSelection(file.id)}
+                              className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+                            />
+                          )}
+                        </td>
+                      {/* ↑ END CHANGED */}
                         <td className="p-3">
                           <div className="flex items-center gap-3">
                             {getFileIcon(file)}
@@ -970,12 +1697,25 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                         <td className={`p-3 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{file.size ? formatFileSize(file.size) : '—'}</td>
                         <td className="p-3" onClick={e => e.stopPropagation()}>
                           <div className="flex items-center gap-1">
-                            <ProtectedIconButton permission={FilePermissions.RENAME} icon={<Edit className="w-4 h-4" />} onClick={() => openRenameModal(file)} title="Rename" variant="primary" />
+                            {isFileOwner(file, CURRENT_USER_ID) && (
+                              <ProtectedIconButton permission={FilePermissions.RENAME} icon={<Edit className="w-4 h-4" />} onClick={() => openRenameModal(file)} title="Rename" variant="primary" />
+                            )}
+                            {/* ↓ NEW: Move button */}
+                            {isFileOwner(file, CURRENT_USER_ID) && (
+                              <button
+                                onClick={e => { e.stopPropagation(); openMoveModalForItem(file); }}
+                                title="Move"
+                                className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-gray-700' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-100'}`}
+                              >
+                                <Move className="w-4 h-4" />
+                              </button>
+                            )}
+                            {/* ↑ END NEW */}
                             {file.type === 'file' && (
                               <>
                                 <button onClick={e => handleToggleStar(e, file)}
                                   title={file.isStarred ? 'Remove from Starred Files' : 'Add to Starred Files'}
-                                  className={`p-1 rounded transition-colors ${file.isStarred ? 'text-yellow-400 hover:text-yellow-500' : isDarkMode ? 'text-gray-500 hover:text-yellow-400' : 'text-gray-300 hover:text-yellow-400'}`}>
+                                  className={`p-1.5 rounded-lg transition-colors ${file.isStarred ? 'text-yellow-400 hover:text-yellow-500' : isDarkMode ? 'text-gray-500 hover:text-yellow-400' : 'text-gray-300 hover:text-yellow-400'}`}>
                                   <Star className={`w-4 h-4 ${file.isStarred ? 'fill-current' : ''}`} />
                                 </button>
                                 {isFileOwner(file, CURRENT_USER_ID) && (
@@ -995,36 +1735,101 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                   </tbody>
                 </table>
               </div>
+
             ) : (
+              // ── GRID VIEW ──
               <div className="p-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
                   {filteredAndSortedFiles.map(file => (
-                    <div key={file.id}
-                      className={`relative group p-4 border rounded-lg hover:shadow-md transition-all cursor-pointer ${isDarkMode ? 'border-gray-700 hover:border-gray-600 bg-gray-800' : 'border-gray-200 hover:border-gray-300 bg-white'}`}
-                      onClick={() => { if (file.type === 'folder') handleFolderClick(file); else handleFilePreview(file); }}>
-                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                        <ProtectedIconButton permission={FilePermissions.RENAME} icon={<Edit className="w-4 h-4" />}
-                          onClick={e => { e.stopPropagation(); openRenameModal(file); }} title="Rename" variant="primary" />
-                        {file.type === 'file' && (
-                          <>
-                            <button onClick={e => handleToggleStar(e, file)}
-                              title={file.isStarred ? 'Remove from Starred Files' : 'Add to Starred Files'}
-                              className={`p-1 rounded transition-colors ${file.isStarred ? 'text-yellow-400 hover:text-yellow-500' : isDarkMode ? 'text-gray-500 hover:text-yellow-400' : 'text-gray-300 hover:text-yellow-400'}`}>
-                              <Star className={`w-4 h-4 ${file.isStarred ? 'fill-current' : ''}`} />
+                    // ↓ CHANGED: added drag/drop props + dragOver highlight
+                    <div
+                      key={file.id}
+                      draggable={!isSelectMode && isFileOwner(file, CURRENT_USER_ID)}
+                      onDragStart={!isSelectMode && isFileOwner(file, CURRENT_USER_ID) ? e => handleDragStart(e, { id: file.id, name: file.name, type: file.type }) : undefined}
+                      onDragOver={!isSelectMode && file.type === 'folder' ? e => handleDragOver(e, file.id) : undefined}
+                      onDragLeave={!isSelectMode && file.type === 'folder' ? handleDragLeave : undefined}
+                      onDrop={!isSelectMode && file.type === 'folder' ? e => handleDrop(e, file.id, file.name) : undefined}
+                      onClick={() => handleItemClick(file)}
+                      className={`relative group p-4 border rounded-lg transition-all cursor-pointer ${
+                        dragOverFolderId === file.id && file.type === 'folder'
+                          ? isDarkMode ? 'border-blue-500 bg-blue-900 shadow-lg scale-105' : 'border-blue-400 bg-blue-50 shadow-lg scale-105'
+                          : isSelectMode && selectedFiles.includes(file.id)
+                            ? isDarkMode ? 'border-blue-500 bg-blue-950 ring-2 ring-blue-500' : 'border-blue-400 bg-blue-50 ring-2 ring-blue-400'
+                          : isSelectMode
+                            ? isDarkMode ? 'border-gray-700 bg-gray-800 hover:border-blue-600 hover:bg-gray-750' : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50'
+                          : isDarkMode ? 'border-gray-700 hover:border-gray-600 bg-gray-800 hover:shadow-md' : 'border-gray-200 hover:border-gray-300 bg-white hover:shadow-md'
+                      }`}
+                    >
+                    {/* ↑ END CHANGED */}
+                      {/* Checkbox — only visible in select mode */}
+                      {isSelectMode && (
+                        <div
+                          className="absolute top-2 left-2 z-10"
+                          onClick={e => { e.stopPropagation(); toggleFileSelection(file.id); }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedFiles.includes(file.id)}
+                            onChange={() => {}}
+                            className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+                          />
+                        </div>
+                      )}
+
+                      {/* Action icons — single row at top, hidden in select mode */}
+                      {!isSelectMode && (
+                         <div className="absolute top-1.5 inset-x-1.5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-end gap-0.5 flex-nowrap">
+                          {isFileOwner(file, CURRENT_USER_ID) && (
+                            <ProtectedIconButton
+                              permission={FilePermissions.RENAME}
+                              icon={<Edit className="w-3.5 h-3.5" />}
+                              onClick={e => { e.stopPropagation(); openRenameModal(file); }}
+                              title="Rename" variant="primary"
+                            />
+                          )}
+                          {isFileOwner(file, CURRENT_USER_ID) && (
+                            <button
+                              onClick={e => { e.stopPropagation(); openMoveModalForItem(file); }}
+                              title="Move"
+                              className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-gray-700' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-100'}`}
+                            >
+                              <Move className="w-3.5 h-3.5" />
                             </button>
-                            {isFileOwner(file, CURRENT_USER_ID) && (
-                              <ProtectedIconButton permission={FilePermissions.SHARE} icon={<Share2 className="w-4 h-4" />}
-                                onClick={e => { e.stopPropagation(); setSelectedFiles([file.id]); setShowShareModal(true); }}
-                                title="Share this file" variant="secondary" />
-                            )}
-                            <ProtectedIconButton permission={FilePermissions.DOWNLOAD} icon={<Download className="w-4 h-4" />}
-                              onClick={e => { e.stopPropagation(); handleDownload(file); }} title="Download" variant="primary" />
-                          </>
-                        )}
-                        <ProtectedIconButton permission={FilePermissions.DELETE} icon={<Trash2 className="w-4 h-4" />}
-                          onClick={e => { e.stopPropagation(); handleDelete(file.id); }} title="Delete" variant="danger" />
-                      </div>
-                      <div className="flex flex-col items-center text-center mt-2">
+                          )}
+                          {file.type === 'file' && (
+                            <button
+                              onClick={e => handleToggleStar(e, file)}
+                              title={file.isStarred ? 'Remove from Starred' : 'Add to Starred'}
+                              className={`p-1.5 rounded-lg transition-colors ${file.isStarred ? 'text-yellow-400 hover:text-yellow-500' : isDarkMode ? 'text-gray-500 hover:text-yellow-400' : 'text-gray-300 hover:text-yellow-400'}`}
+                            >
+                              <Star className={`w-3.5 h-3.5 ${file.isStarred ? 'fill-current' : ''}`} />
+                            </button>
+                          )}
+                          {file.type === 'file' && isFileOwner(file, CURRENT_USER_ID) && (
+                            <ProtectedIconButton
+                              permission={FilePermissions.SHARE}
+                              icon={<Share2 className="w-3.5 h-3.5" />}
+                              onClick={e => { e.stopPropagation(); setSelectedFiles([file.id]); setShowShareModal(true); }}
+                              title="Share" variant="secondary"
+                            />
+                          )}
+                          {file.type === 'file' && (
+                            <ProtectedIconButton
+                              permission={FilePermissions.DOWNLOAD}
+                              icon={<Download className="w-3.5 h-3.5" />}
+                              onClick={e => { e.stopPropagation(); handleDownload(file); }}
+                              title="Download" variant="primary"
+                            />
+                          )}
+                          <ProtectedIconButton
+                            permission={FilePermissions.DELETE}
+                            icon={<Trash2 className="w-3.5 h-3.5" />}
+                            onClick={e => { e.stopPropagation(); handleDelete(file.id); }}
+                            title="Delete" variant="danger"
+                          />
+                        </div>
+                      )}
+                      <div className="flex flex-col items-center text-center mt-8">
                         <div className="w-12 h-12 mb-3 flex items-center justify-center">
                           {file.type === 'folder' ? <Folder className="w-10 h-10 text-blue-500" /> : (
                             <div className="relative">
@@ -1033,7 +1838,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
                             </div>
                           )}
                         </div>
-                        <h3 className={`font-medium text-sm mb-1 line-clamp-2 leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{file.name}</h3>
+                        <h3 className={`font-medium text-sm mb-2 line-clamp-2 leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{file.name}</h3>
                         <div className={`text-xs space-y-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                           <div className="flex items-center justify-center gap-1"><Clock className="w-3 h-3" />{formatDate(file.modifiedAt)}</div>
                           {file.size && <div>{formatFileSize(file.size)}</div>}
@@ -1048,7 +1853,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── Empty State ── */}
+        {/* Empty State — UNCHANGED */}
         {!loading && filteredAndSortedFiles.length === 0 && (
           <div className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} rounded-lg shadow-sm border p-12 text-center mt-6`}>
             <File className={`w-12 h-12 mx-auto mb-4 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`} />
@@ -1063,7 +1868,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── Upload Modal ── */}
+        {/* Upload Modal — UNCHANGED */}
         {showUploadModal && !isMainPage && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className={`rounded-lg p-6 w-full max-w-md ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
@@ -1106,7 +1911,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── Create Folder Modal ── */}
+        {/* Create Folder Modal — UNCHANGED */}
         {showFolderModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-6 w-full max-w-md`}>
@@ -1135,7 +1940,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── Rename Modal ── */}
+        {/* Rename Modal — UNCHANGED */}
         {showRenameModal && itemToRename && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-6 w-full max-w-md`}>
@@ -1164,54 +1969,568 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
           </div>
         )}
 
-        {/* ── File Preview Modal ── */}
         {showPreviewModal && previewFile && (
           <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden`}>
-              <div className={`flex items-center justify-between p-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-                <div className="flex items-center gap-3">
-                  {getFileIcon(previewFile)}
-                  <div>
-                    <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{previewFile.name}</h3>
-                    <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                      {previewFile.size ? `${formatFileSize(previewFile.size)} • ` : ''}Modified {formatDate(previewFile.modifiedAt)}
+            <div className="w-full h-full flex flex-col bg-white dark:bg-gray-900" style={{ maxWidth: '100vw', maxHeight: '100vh' }}>
+
+              {/* ── Top Bar ── */}
+              <div className="flex items-center justify-between px-4 py-3 bg-gray-900 text-white flex-shrink-0">
+                {/* Left: file icon + name + size */}
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 bg-red-600 rounded flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-4 h-4 text-white" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate text-white leading-tight">{previewFile.name}</p>
+                    <p className="text-xs text-gray-400 leading-tight">
+                      {previewFile.size ? formatFileSize(previewFile.size) : '—'} • {previewFile.fileType?.toUpperCase() || 'FILE'}
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => handleDownload(previewFile)} className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">
-                    <Download className="w-4 h-4" /> Download
+
+                {/* Right: action buttons */}
+                <div className="flex items-center gap-1 flex-shrink-0 ml-4">
+                  {/* Star */}
+                  <button
+                    onClick={e => handleToggleStar(e, previewFile)}
+                    title={previewFile.isStarred ? 'Remove from Starred' : 'Add to Starred'}
+                    className={`p-2 rounded-lg transition-colors ${
+                      previewFile.isStarred
+                        ? 'text-yellow-400 hover:text-yellow-300'
+                        : 'text-gray-400 hover:text-yellow-400 hover:bg-gray-700'
+                    }`}
+                  >
+                    <Star className={`w-5 h-5 ${previewFile.isStarred ? 'fill-current' : ''}`} />
                   </button>
-                  <button onClick={() => { setShowPreviewModal(false); setPreviewFile(null); setPreviewLoading(false); }}
-                    className={`p-2 rounded-md ${isDarkMode ? 'text-gray-400 hover:text-gray-300 hover:bg-gray-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>
+
+                  {/* Share */}
+                  {isFileOwner(previewFile, CURRENT_USER_ID) && (
+                    <button
+                      onClick={() => {
+                        setSelectedFileForShares(previewFile);
+                        setShowShareModal(true);
+                      }}
+                      title="Share"
+                      className="p-2 rounded-lg text-gray-400 hover:text-blue-400 hover:bg-gray-700 transition-colors"
+                    >
+                      <Share2 className="w-5 h-5" />
+                    </button>
+                  )}
+
+                  {/* Download */}
+                  <button
+                    onClick={() => handleDownload(previewFile)}
+                    title="Download"
+                    className="p-2 rounded-lg text-gray-400 hover:text-green-400 hover:bg-gray-700 transition-colors"
+                  >
+                    <Download className="w-5 h-5" />
+                  </button>
+
+                  {/* Delete */}
+                  {isFileOwner(previewFile, CURRENT_USER_ID) && (
+                    <button
+                      onClick={() => { handleDelete(previewFile.id); setShowPreviewModal(false); setPreviewFile(null); }}
+                      title="Delete"
+                      className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-700 transition-colors"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  )}
+
+                  {/* Divider */}
+                  <div className="w-px h-5 bg-gray-600 mx-1" />
+
+                  {/* Close */}
+                  <button
+                    onClick={() => { setShowPreviewModal(false); setPreviewFile(null); setPreviewLoading(false); }}
+                    className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+                  >
                     <X className="w-5 h-5" />
                   </button>
                 </div>
               </div>
-              <div className={`p-6 overflow-auto max-h-[calc(90vh-120px)] ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
-                {previewLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
-                    <span className={`ml-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Loading preview…</span>
+
+              {/* ── Bottom bar: By + Downloads ── */}
+              <div className="flex items-center justify-between px-4 py-2 bg-gray-800 text-xs text-gray-400 flex-shrink-0 border-b border-gray-700">
+                <span>By: <span className="text-gray-300 font-medium">{previewFile.modifiedBy}</span></span>
+                <span>Downloads: <span className="text-gray-300 font-medium">{(previewFile as any).download_count ?? 0}</span></span>
+              </div>
+
+              {/* ── Content Area ── */}
+              <div className="flex-1 overflow-hidden bg-gray-700 flex items-center justify-center">
+                {previewLoading && (
+                  <div className="flex flex-col items-center gap-3 text-white">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
+                    <span className="text-sm text-gray-400">Loading preview…</span>
                   </div>
-                ) : canPreviewFile(previewFile) ? (
-                  <div className="text-center">{renderFilePreview()}</div>
+                )}
+
+                {canPreviewFile(previewFile) ? (
+                  <>
+                    {/* Image */}
+                    {['jpg','jpeg','png','gif','webp','bmp','svg'].includes(previewFile.fileType?.toLowerCase() || '') && (
+                      <img
+                        src={`${API_BASE}/preview/${previewFile.id}`}
+                        alt={previewFile.name}
+                        className="max-w-full max-h-full object-contain"
+                        onLoad={() => setPreviewLoading(false)}
+                        onError={() => setPreviewLoading(false)}
+                      />
+                    )}
+
+                    {/* PDF */}
+                    {previewFile.fileType?.toLowerCase() === 'pdf' && (
+                      <iframe
+                        src={`${API_BASE}/preview/${previewFile.id}`}
+                        className="w-full h-full border-0"
+                        onLoad={() => setPreviewLoading(false)}
+                        title={previewFile.name}
+                      />
+                    )}
+
+                    {/* Text / Code */}
+                    {['txt','csv','json','xml','html','css','js','md'].includes(previewFile.fileType?.toLowerCase() || '') && (
+                      <iframe
+                        src={`${API_BASE}/preview/${previewFile.id}`}
+                        className="w-full h-full border-0 bg-white"
+                        onLoad={() => setPreviewLoading(false)}
+                        title={previewFile.name}
+                      />
+                    )}
+                  </>
                 ) : (
-                  <div className="text-center py-12">
-                    <File className={`w-16 h-16 mx-auto mb-4 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`} />
-                    <h4 className={`text-xl font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Preview Not Available</h4>
-                    <p className={`mb-6 max-w-md mx-auto ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>This file type cannot be previewed in the browser. Download the file to view its contents.</p>
-                    <button onClick={() => handleDownload(previewFile)} className="inline-flex items-center gap-2 px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-                      <Download className="w-4 h-4" /> Download File
+                  /* No preview available */
+                  <div className="text-center">
+                    <div className="w-20 h-20 bg-gray-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                      <File className="w-10 h-10 text-gray-400" />
+                    </div>
+                    <h4 className="text-lg font-semibold text-white mb-2">Preview Not Available</h4>
+                    <p className="text-gray-400 text-sm mb-6 max-w-xs">This file type cannot be previewed in the browser.</p>
+                    <button
+                      onClick={() => handleDownload(previewFile)}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                    >
+                      <Download className="w-4 h-4" /> Download to View
                     </button>
                   </div>
                 )}
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {/* ↓↓↓ NEW: MOVE MODAL ↓↓↓ */}
+        {showMoveModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+            <div className={`w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col ${isDarkMode ? 'bg-gray-900 border border-gray-700' : 'bg-white border border-gray-200'}`} style={{ maxHeight: '85vh' }}>
+              <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-blue-900' : 'bg-blue-100'}`}>
+                    <Move className="w-5 h-5 text-blue-500" />
+                  </div>
+                  <div>
+                    <h3 className={`font-semibold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                      Move {moveItems.length === 1 ? `"${moveItems[0].name}"` : `${moveItems.length} items`}
+                    </h3>
+                    <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      {moveItems.filter(i => i.type === 'file').length} file(s), {moveItems.filter(i => i.type === 'folder').length} folder(s)
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => { setShowMoveModal(false); setMovePreview(null); setShowInlineFolderCreate(false); setInlineFolderName(''); }} className={`p-2 rounded-lg ${isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-100'}`}>
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className={`px-6 py-3 border-b ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'}`}>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className={isDarkMode ? 'text-gray-400' : 'text-gray-500'}>Moving to:</span>
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${isDarkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>
+                    <Folder className="w-3.5 h-3.5" /> {moveTargetFolderName}
+                  </div>
+                </div>
+                {movePreviewLoading && (
+                  <div className={`flex items-center gap-2 text-sm mt-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    <Loader className="w-4 h-4 animate-spin" /> Checking destination…
+                  </div>
+                )}
+                {!movePreviewLoading && movePreview && (
+                  <div className="mt-3 space-y-2">
+                    {movePreview.can_move.length > 0 && (
+                      <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${isDarkMode ? 'bg-green-900 text-green-300' : 'bg-green-50 text-green-700'}`}>
+                        <CheckCircle className="w-4 h-4 flex-shrink-0" />
+                        {movePreview.can_move.length} item{movePreview.can_move.length !== 1 ? 's' : ''} ready to move
+                      </div>
+                    )}
+                    {movePreview.conflicts.length > 0 && (
+                      <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${isDarkMode ? 'bg-yellow-900 text-yellow-300' : 'bg-yellow-50 text-yellow-700'}`}>
+                        <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                        {movePreview.conflicts.length} name conflict{movePreview.conflicts.length !== 1 ? 's' : ''} — you'll choose how to handle them next
+                      </div>
+                    )}
+                    {movePreview.errors.length > 0 && (
+                      <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${isDarkMode ? 'bg-red-900 text-red-300' : 'bg-red-50 text-red-700'}`}>
+                        <X className="w-4 h-4 flex-shrink-0" /> {movePreview.errors[0]?.reason}
+                      </div>
+                    )}
+                    {movePreview.warnings.length > 0 && (
+                      <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${isDarkMode ? 'bg-orange-900 text-orange-300' : 'bg-orange-50 text-orange-700'}`}>
+                        <Info className="w-4 h-4 flex-shrink-0" /> {movePreview.warnings[0]?.reason}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 overflow-y-auto px-4 py-3">
+                {/* Header row: label + New Folder button */}
+                <div className="flex items-center justify-between mb-3 px-2">
+                  <p className={`text-xs font-medium uppercase tracking-wider ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                    Select destination
+                  </p>
+                  <button
+                    onClick={() => { setShowInlineFolderCreate(v => !v); setInlineFolderName(''); }}
+                    className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-lg border transition-colors ${
+                      showInlineFolderCreate
+                        ? isDarkMode ? 'bg-blue-900 border-blue-600 text-blue-300' : 'bg-blue-50 border-blue-300 text-blue-700'
+                        : isDarkMode ? 'border-gray-600 text-gray-400 hover:bg-gray-700 hover:text-gray-200' : 'border-gray-300 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+                    }`}
+                  >
+                    <FolderPlus className="w-3.5 h-3.5" />
+                    New Folder
+                  </button>
+                </div>
+
+                {/* Inline folder creation input */}
+                {showInlineFolderCreate && (
+                  <div className={`mx-2 mb-3 p-3 rounded-xl border ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+                    <p className={`text-xs mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Creating inside: <span className="font-medium">{moveTargetFolderName}</span>
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={inlineFolderName}
+                        onChange={e => setInlineFolderName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && inlineFolderName.trim() && !isCreatingInlineFolder) handleCreateInlineFolder();
+                          if (e.key === 'Escape') { setShowInlineFolderCreate(false); setInlineFolderName(''); }
+                        }}
+                        placeholder="Folder name…"
+                        autoFocus
+                        className={`flex-1 text-sm px-3 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-blue-500 ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'}`}
+                      />
+                      <button
+                        onClick={handleCreateInlineFolder}
+                        disabled={!inlineFolderName.trim() || isCreatingInlineFolder}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {isCreatingInlineFolder
+                          ? <><Loader className="w-3.5 h-3.5 animate-spin" /> Creating…</>
+                          : <><CheckCircle className="w-3.5 h-3.5" /> Create</>
+                        }
+                      </button>
+                      <button
+                        onClick={() => { setShowInlineFolderCreate(false); setInlineFolderName(''); }}
+                        className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'text-gray-500 hover:bg-gray-700' : 'text-gray-400 hover:bg-gray-200'}`}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div
+                  onClick={() => selectDestination(null, 'Home (root)')}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors mb-1 ${moveTargetFolderId === null ? 'bg-blue-600 text-white' : isDarkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-100'}`}
+                >
+                  <Home className="w-4 h-4 flex-shrink-0" />
+                  <span className="text-sm font-medium">Home (root)</span>
+                </div>
+                {folderTreeLoading ? (
+                  <div className={`flex items-center gap-2 px-3 py-3 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    <Loader className="w-4 h-4 animate-spin" /> Loading folders…
+                  </div>
+                ) : (
+                  folderTree.map(node => (
+                    <MoveTreeNode
+                      key={node.id}
+                      node={node}
+                      selectedId={moveTargetFolderId}
+                      onSelect={selectDestination}
+                      onToggle={toggleFolderInTree}
+                      disabledIds={moveItems.filter(i => i.type === 'folder').map(i => i.id)}
+                      isDarkMode={isDarkMode}
+                    />
+                  ))
+                )}
+              </div>
+              <div className={`px-6 py-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-200'} flex gap-3`}>
+                <button onClick={() => { setShowMoveModal(false); setMovePreview(null); }} className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium border transition-colors ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-800' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                  Cancel
+                </button>
+                <button
+                  onClick={() => executeMove('ask')}
+                  disabled={isMoving || movePreviewLoading}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+                >
+                  {isMoving ? <><Loader className="w-4 h-4 animate-spin" /> Moving…</> : <><ArrowRight className="w-4 h-4" /> Move here</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ↓↓↓ NEW: CONFLICT MODAL ↓↓↓ */}
+        {showConflictModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+            <div className={`w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden flex flex-col ${isDarkMode ? 'bg-gray-900 border border-gray-700' : 'bg-white border border-gray-200'}`} style={{ maxHeight: '85vh' }}>
+              <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-yellow-900' : 'bg-yellow-100'}`}>
+                    <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                  </div>
+                  <div>
+                    <h3 className={`font-semibold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                      {pendingConflicts.length} Naming Conflict{pendingConflicts.length !== 1 ? 's' : ''}
+                    </h3>
+                    <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>These files already exist at the destination</p>
+                  </div>
+                </div>
+                <button onClick={() => { setShowConflictModal(false); setPendingConflicts([]); setConflictDecisions({}); }} className={`p-2 rounded-lg ${isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-100'}`}>
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              {pendingConflicts.length > 1 && (
+                <div className={`px-6 py-3 border-b ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50'}`}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-xs mr-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Apply to all:</span>
+                    {(['overwrite', 'version', 'skip'] as const).map(s => (
+                      <button key={s} onClick={() => applyAllConflicts(s)}
+                        className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                          s === 'overwrite' ? isDarkMode ? 'bg-red-900 border-red-700 text-red-300 hover:bg-red-800' : 'bg-red-50 border-red-200 text-red-700 hover:bg-red-100'
+                          : s === 'version' ? isDarkMode ? 'bg-blue-900 border-blue-700 text-blue-300 hover:bg-blue-800' : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+                          : isDarkMode ? 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600' : 'bg-gray-100 border-gray-200 text-gray-700 hover:bg-gray-200'
+                        }`}>
+                        {s === 'overwrite' ? 'Overwrite all' : s === 'version' ? 'Version all' : 'Skip all'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                {pendingConflicts.map(conflict => {
+                  const decided = conflictDecisions[conflict.id];
+                  return (
+                    <div key={conflict.id} className={`rounded-xl border p-4 ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50'}`}>
+                      <div className="flex items-start gap-3 mb-3">
+                        <FileText className={`w-5 h-5 flex-shrink-0 mt-0.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className={`font-medium text-sm truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{conflict.name}</p>
+                          <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Already exists at destination</p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {([
+                          { key: 'overwrite' as const, label: 'Overwrite', icon: <Copy className="w-4 h-4" />, active: 'bg-red-600 text-white border-red-600' },
+                          { key: 'version' as const,   label: 'New version', icon: <Layers className="w-4 h-4" />, active: 'bg-blue-600 text-white border-blue-600' },
+                          { key: 'skip' as const,      label: 'Skip', icon: <X className="w-4 h-4" />, active: isDarkMode ? 'bg-gray-600 text-white border-gray-600' : 'bg-gray-700 text-white border-gray-700' }
+                        ]).map(s => (
+                          <button key={s.key} onClick={() => applyConflictDecision(conflict.id, s.key)}
+                            className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 text-center transition-all ${
+                              decided === s.key ? s.active : isDarkMode ? 'border-gray-600 text-gray-400 hover:border-gray-500' : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                            }`}>
+                            {s.icon}
+                            <span className="text-xs font-medium">{s.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {decided && (
+                        <p className={`mt-2 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          ✓ {decided === 'overwrite' ? 'Replace existing. Previous version saved.' : decided === 'version' ? 'Keep both as versions.' : "This file won't be moved."}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className={`px-6 py-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-200'} flex gap-3`}>
+                <button onClick={() => { setShowConflictModal(false); setPendingConflicts([]); setConflictDecisions({}); }} className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium border transition-colors ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-800' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                  Cancel
+                </button>
+                <button onClick={confirmConflicts} disabled={pendingConflicts.some(c => !conflictDecisions[c.id])}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {pendingConflicts.filter(c => !conflictDecisions[c.id]).length > 0
+                    ? `${pendingConflicts.filter(c => !conflictDecisions[c.id]).length} left to decide`
+                    : <><CheckCircle className="w-4 h-4" /> Confirm Move</>
+                  }
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ↓↓↓ NEW: UNDO TOAST ↓↓↓ */}
+        {undoToast?.visible && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4">
+            <div className={`flex items-center gap-3 px-4 py-3.5 rounded-2xl shadow-2xl border ${isDarkMode ? 'bg-gray-900 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}>
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${isDarkMode ? 'bg-green-900' : 'bg-green-100'}`}>
+                <CheckCircle className="w-4 h-4 text-green-500" />
+              </div>
+              <p className="flex-1 text-sm font-medium truncate">{undoToast.message}</p>
+              <button onClick={() => handleUndoMove(undoToast.batchId)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex-shrink-0 ${isDarkMode ? 'bg-blue-900 text-blue-300 hover:bg-blue-800' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`}>
+                <Undo2 className="w-3.5 h-3.5" /> Undo
+              </button>
+              <button onClick={() => setUndoToast(null)} className={`p-1.5 rounded-lg flex-shrink-0 ${isDarkMode ? 'text-gray-500 hover:bg-gray-800' : 'text-gray-400 hover:bg-gray-100'}`}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ↓↓↓ NEW: MOVE HISTORY MODAL ↓↓↓ */}
+        {showHistoryModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+            <div className={`w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col ${isDarkMode ? 'bg-gray-900 border border-gray-700' : 'bg-white border border-gray-200'}`} style={{ maxHeight: '85vh' }}>
+              <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-purple-900' : 'bg-purple-100'}`}>
+                    <History className="w-5 h-5 text-purple-500" />
+                  </div>
+                  <div>
+                    <h3 className={`font-semibold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Move History</h3>
+                    <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Last {moveHistory.length} move{moveHistory.length !== 1 ? 's' : ''} — undoable within 24 hours</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowHistoryModal(false)} className={`p-2 rounded-lg ${isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-100'}`}>
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-6 py-4">
+                {historyLoading ? (
+                  <div className="flex items-center justify-center py-12 gap-3">
+                    <Loader className="w-5 h-5 animate-spin text-blue-500" />
+                    <span className={isDarkMode ? 'text-gray-400' : 'text-gray-500'}>Loading history…</span>
+                  </div>
+                ) : moveHistory.length === 0 ? (
+                  <div className={`text-center py-12 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                    <History className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                    <p className="font-medium">No move history yet</p>
+                    <p className="text-sm mt-1">Your moves will appear here</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {moveHistory.map(batch => {
+                      const isExpanded = expandedBatch === batch.batch_id;
+                      const movedAt = new Date(batch.moved_at);
+                      return (
+                        <div key={batch.batch_id} className={`rounded-xl border overflow-hidden ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                          <div onClick={() => setExpandedBatch(prev => prev === batch.batch_id ? null : batch.batch_id)}
+                            className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${isDarkMode ? 'bg-gray-800 hover:bg-gray-750' : 'bg-gray-50 hover:bg-gray-100'}`}>
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${batch.undone ? isDarkMode ? 'bg-gray-700' : 'bg-gray-200' : batch.can_undo ? isDarkMode ? 'bg-blue-900' : 'bg-blue-100' : isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                              {batch.undone ? <RotateCcw className="w-4 h-4 text-gray-400" /> : <Move className={`w-4 h-4 ${batch.can_undo ? 'text-blue-500' : 'text-gray-400'}`} />}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Moved {batch.item_count} item{batch.item_count !== 1 ? 's' : ''}</p>
+                                {batch.undone && <span className={`text-xs px-2 py-0.5 rounded-full ${isDarkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-200 text-gray-500'}`}>Undone</span>}
+                                {batch.can_undo && !batch.undone && <span className={`text-xs px-2 py-0.5 rounded-full ${isDarkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>Can undo</span>}
+                              </div>
+                              <div className={`flex items-center gap-2 text-xs mt-0.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                <Clock className="w-3 h-3" />
+                                {movedAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at {movedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                                {batch.can_undo && <span className="text-blue-400">· expires in {batch.expires_in}</span>}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              {batch.can_undo && !batch.undone && (
+                                <button onClick={e => { e.stopPropagation(); handleUndoMove(batch.batch_id); }}
+                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${isDarkMode ? 'bg-blue-900 text-blue-300 hover:bg-blue-800' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`}>
+                                  <Undo2 className="w-3.5 h-3.5" /> Undo
+                                </button>
+                              )}
+                              {isExpanded ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                            </div>
+                          </div>
+                          {isExpanded && (
+                            <div className={`divide-y ${isDarkMode ? 'divide-gray-700' : 'divide-gray-100'}`}>
+                              {batch.items.map(item => (
+                                <div key={item.id} className={`flex items-center gap-3 px-4 py-2.5 ${isDarkMode ? 'bg-gray-900' : 'bg-white'}`}>
+                                  {item.item_type === 'folder' ? <Folder className="w-4 h-4 text-blue-400 flex-shrink-0" /> : <File className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+                                  <span className={`text-sm flex-1 min-w-0 truncate ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>{item.item_name}</span>
+                                  <div className={`flex items-center gap-1.5 text-xs flex-shrink-0 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                    <span className="truncate max-w-[80px]">{item.from_folder}</span>
+                                    <ArrowRight className="w-3 h-3 flex-shrink-0" />
+                                    <span className="truncate max-w-[80px]">{item.to_folder}</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className={`px-6 py-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <button onClick={() => setShowHistoryModal(false)} className={`w-full px-4 py-2.5 rounded-xl text-sm font-medium border transition-colors ${isDarkMode ? 'border-gray-600 text-gray-300 hover:bg-gray-800' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                  Close
+                </button>
               </div>
             </div>
           </div>
         )}
 
       </div>
+    </div>
+  );
+};
+
+// ↓↓↓ NEW: FOLDER TREE NODE COMPONENT (used inside Move Modal) ↓↓↓
+const MoveTreeNode: React.FC<{
+  node: FolderNode;
+  selectedId: string | null;
+  onSelect: (id: string, name: string) => void;
+  onToggle: (id: string, name: string, isOpen: boolean) => void;
+  disabledIds: string[];
+  isDarkMode: boolean;
+  depth?: number;
+}> = ({ node, selectedId, onSelect, onToggle, disabledIds, isDarkMode, depth = 0 }) => {
+  const isSelected = selectedId === node.id;
+  const isDisabled = disabledIds.includes(node.id);
+  const hasChildren = !node.isLoaded || (node.children && node.children.length > 0);
+
+  return (
+    <div>
+      <div
+        style={{ paddingLeft: `${12 + (depth * 20)}px` }}
+        onClick={() => !isDisabled && onSelect(node.id, node.name)}
+        className={`flex items-center gap-2 pr-3 py-2 rounded-lg cursor-pointer transition-colors select-none ${
+          isSelected ? 'bg-blue-600 text-white'
+          : isDisabled ? `${isDarkMode ? 'text-gray-600' : 'text-gray-300'} cursor-not-allowed opacity-50`
+          : isDarkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-100'
+        }`}
+      >
+        <button
+          onClick={e => { e.stopPropagation(); if (!isDisabled) onToggle(node.id, node.name, !!node.isOpen); }}
+          className="w-4 h-4 flex-shrink-0 flex items-center justify-center"
+        >
+          {hasChildren
+            ? node.isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />
+            : <span className="w-4" />
+          }
+        </button>
+        {node.isOpen
+          ? <FolderOpen className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-white' : 'text-blue-400'}`} />
+          : <Folder className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-white' : 'text-blue-400'}`} />
+        }
+        <span className="text-sm truncate flex-1">{node.name}</span>
+        {isDisabled && <span className={`text-xs ml-auto flex-shrink-0 ${isDarkMode ? 'text-gray-600' : 'text-gray-300'}`}>can't move here</span>}
+      </div>
+      {node.isOpen && node.children && node.children.map(child => (
+        <MoveTreeNode key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} onToggle={onToggle} disabledIds={disabledIds} isDarkMode={isDarkMode} depth={(depth || 0) + 1} />
+      ))}
     </div>
   );
 };

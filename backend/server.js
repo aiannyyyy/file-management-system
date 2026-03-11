@@ -100,6 +100,7 @@ app.use('/api/share', shareRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/move", require("./routes/moveRouter"));
+app.use("/api/category-move", require("./routes/categoryMoveRouter"));
 
 // ============================================
 // SERVE STATIC REACT APP

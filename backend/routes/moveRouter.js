@@ -72,8 +72,8 @@ async function checkCircularReference(folderId, targetParentId) {
 // ================== Helper: Check File Conflict ==================
 async function checkFileConflict(fileName, targetFolderId) {
   const query = targetFolderId
-    ? 'SELECT id, file_name, file_path, file_size, file_type FROM files WHERE file_name = ? AND folder_id = ?'
-    : 'SELECT id, file_name, file_path, file_size, file_type FROM files WHERE file_name = ? AND folder_id IS NULL';
+    ? 'SELECT id, file_name, file_path, file_size, file_type, folder_id FROM files WHERE file_name = ? AND folder_id = ?'
+    : 'SELECT id, file_name, file_path, file_size, file_type, folder_id FROM files WHERE file_name = ? AND folder_id IS NULL';
   const params = targetFolderId ? [fileName, targetFolderId] : [fileName];
   const [rows] = await inhouseDb.query(query, params);
   return rows.length > 0 ? rows[0] : null;
@@ -140,22 +140,89 @@ async function handleOverwrite(incomingFile, existingFile, targetFolderId, moved
 
 // ================== Helper: Handle Version (Phase 2) ==================
 async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy) {
-  const versionNumber = await getNextVersionNumber(existingFile.id);
-  await inhouseDb.query(
-    `INSERT INTO file_versions 
-     (file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      existingFile.id, versionNumber, incomingFile.file_name, incomingFile.file_path,
-      incomingFile.file_size, incomingFile.file_type, incomingFile.folder_id || null, movedBy,
-      `Version ${versionNumber} — added from folder ${incomingFile.folder_id || 'root'}`
-    ]
-  );
-  await inhouseDb.query('DELETE FROM files WHERE id = ?', [incomingFile.id]);
-  await addActivityLog(movedBy, 'VERSION', 'FILE', existingFile.id, existingFile.file_name,
-    JSON.stringify({ action: 'new_version', incoming_file_id: incomingFile.id, new_version_number: versionNumber })
-  );
-  return { strategy: 'version', file_id: existingFile.id, file_name: existingFile.file_name, new_version_number: versionNumber, message: `Incoming file saved as version ${versionNumber}. Existing file unchanged.` };
+  try {
+    // Step 1: Get next version number based on existing file
+    const versionNumber = await getNextVersionNumber(existingFile.id);
+
+    // Step 2: Generate new versioned file name
+    // e.g. "Testing_Document.pdf" → "Testing_Document (Version 2).pdf"
+    const ext = path.extname(incomingFile.file_name); // ".pdf"
+    const baseName = path.basename(incomingFile.file_name, ext); // "Testing_Document"
+    const versionedFileName = `${baseName} (Version ${versionNumber})${ext}`;
+
+    // Step 3: Rename physical file on disk
+    const oldPhysicalPath = fs.existsSync(incomingFile.file_path)
+      ? incomingFile.file_path
+      : path.join(process.cwd(), incomingFile.file_path);
+
+    const versionedPhysicalName = `${Date.now()}-${versionedFileName.replace(/[^a-zA-Z0-9.\-()]/g, '_')}`;
+    const versionedFilePath = path.join('uploads', versionedPhysicalName);
+    const resolvedVersionedPath = path.join(process.cwd(), versionedFilePath);
+
+    if (fs.existsSync(oldPhysicalPath)) {
+      await fs.promises.rename(oldPhysicalPath, resolvedVersionedPath);
+      console.log(`✅ Renamed physical file to: ${resolvedVersionedPath}`);
+    } else {
+      console.warn(`⚠️ Physical file not found: ${oldPhysicalPath}`);
+    }
+
+    // Step 4: Update the incoming file row with new name, new path, and target folder
+    await inhouseDb.query(
+      `UPDATE files 
+       SET file_name = ?, file_path = ?, folder_id = ?, updated_by = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [
+        versionedFileName,
+        fs.existsSync(resolvedVersionedPath) ? versionedFilePath : incomingFile.file_path,
+        targetFolderId || null,
+        movedBy,
+        incomingFile.id
+      ]
+    );
+
+    // Step 5: Save a record in file_versions linked to the EXISTING file
+    await inhouseDb.query(
+      `INSERT INTO file_versions 
+       (file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        existingFile.id,
+        versionNumber,
+        versionedFileName,
+        fs.existsSync(resolvedVersionedPath) ? versionedFilePath : incomingFile.file_path,
+        incomingFile.file_size,
+        incomingFile.file_type,
+        incomingFile.folder_id || null,
+        movedBy,
+        `Version ${versionNumber} — moved from folder ${incomingFile.folder_id || 'root'}`
+      ]
+    );
+
+    await addActivityLog(
+      movedBy, 'VERSION', 'FILE', incomingFile.id, versionedFileName,
+      JSON.stringify({
+        action: 'new_version',
+        original_file_id: existingFile.id,
+        version_number: versionNumber,
+        original_name: incomingFile.file_name,
+        new_name: versionedFileName
+      })
+    );
+
+    console.log(`✅ Version created: "${versionedFileName}" (version ${versionNumber})`);
+
+    return {
+      strategy: 'version',
+      file_id: incomingFile.id,
+      file_name: versionedFileName,
+      new_version_number: versionNumber,
+      message: `File saved as "${versionedFileName}" (version ${versionNumber}).`
+    };
+
+  } catch (err) {
+    console.error('💥 Error in handleVersion:', err);
+    throw err;
+  }
 }
 
 // ================== Helper: Record Move History (Phase 5) ==================

@@ -435,8 +435,8 @@ export default function Layout({ children, userData, onLogout }: LayoutProps) {
 
   const navItems = [
     { path: "/dashboard", label: "Dashboard", icon: Home },
-    { path: "/files", label: "Files", icon: FileText },
-    { path: "/categories", label: "Categories", icon: FolderOpen }
+    { path: "/categories", label: "Categories", icon: FolderOpen },
+    { path: "/files", label: "Files", icon: FileText }
   ];
 
   const displayName = userData?.user?.name || "Unknown User";
