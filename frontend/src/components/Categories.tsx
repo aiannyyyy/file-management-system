@@ -778,13 +778,13 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   // NAVIGATION
   // ============================================================
 
-  const handleCategoryDoubleClick = (category: Category) => {
+  const handleCategoryClick = (category: Category) => {
     setCurrentCategoryId(category.id); setCurrentFolderId(null);
     setBreadcrumb([{ id: category.id, name: category.name, type: 'category' }]);
     setCurrentView('files-folders');
   };
 
-  const handleFolderDoubleClick = (folder: Folder) => {
+  const handleFolderClick = (folder: Folder) => {
     setCurrentFolderId(folder.id);
     setBreadcrumb(prev => [...prev, { id: folder.id, name: folder.name, type: 'folder' }]);
   };
@@ -1437,21 +1437,21 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                     const Icon = getIconComponent(category.icon);
                     const cc   = getColorClasses(category.color);
                     return (
-                      <div key={category.id} className={`group border rounded-xl p-6 hover:shadow-md transition-all duration-200 ${isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-gray-500' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
+                      <div key={category.id} onClick={() => handleCategoryClick(category)} className={`group border rounded-xl p-6 hover:shadow-md transition-all duration-200 cursor-pointer ${isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-gray-500' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
                         <div className="flex items-center justify-between mb-4">
-                          <div className={`p-3 ${cc.bg} rounded-lg cursor-pointer`} onDoubleClick={() => handleCategoryDoubleClick(category)}>
+                          <div className={`p-3 ${cc.bg} rounded-lg cursor-pointer`} onClick={() => handleCategoryClick(category)}>
                             <Icon className={`w-6 h-6 ${cc.text}`} />
                           </div>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             {hasPermission(CategoryPermissions.EDIT) && (
-                              <button onClick={() => openModal('edit', 'category', category)} className={`p-1 rounded transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Edit3 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>
+                              <button onClick={e => { e.stopPropagation(); openModal('edit', 'category', category); }} className={`p-1 rounded transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Edit3 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>
                             )}
                             {hasPermission(CategoryPermissions.DELETE) && (
-                              <button onClick={() => openModal('delete', 'category', category)} className={`p-1 rounded transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400' : 'text-gray-400 hover:text-red-600'}`} /></button>
+                              <button onClick={e => { e.stopPropagation(); openModal('delete', 'category', category); }} className={`p-1 rounded transition-colors ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400' : 'text-gray-400 hover:text-red-600'}`} /></button>
                             )}
                           </div>
                         </div>
-                        <h3 className={`font-semibold mb-2 group-hover:text-blue-600 transition-colors cursor-pointer ${isDarkMode ? 'text-white' : 'text-gray-900'}`} onDoubleClick={() => handleCategoryDoubleClick(category)}>{category.name}</h3>
+                        <h3 className={`font-semibold mb-2 group-hover:text-blue-600 transition-colors cursor-pointer ${isDarkMode ? 'text-white' : 'text-gray-900'}`} onClick={() => handleCategoryClick(category)}>{category.name}</h3>
                         <p className={`text-sm mb-4 line-clamp-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{category.description}</p>
                         <div className={`text-sm mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{formatDate(category.updated_at)}</div>
                         <div className={`pt-3 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-100'}`}>
@@ -1477,11 +1477,11 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                       const Icon = getIconComponent(category.icon);
                       const cc   = getColorClasses(category.color);
                       return (
-                        <tr key={category.id} className={`transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
+                        <tr key={category.id} onClick={() => handleCategoryClick(category)} className={`transition-colors cursor-pointer ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
                           <td className="p-4">
                             <div className="flex items-center gap-3">
-                              <div className={`p-2 ${cc.bg} rounded-lg cursor-pointer`} onDoubleClick={() => handleCategoryDoubleClick(category)}><Icon className={`w-5 h-5 ${cc.text}`} /></div>
-                              <div className={`font-medium cursor-pointer ${isDarkMode ? 'text-white hover:text-blue-400' : 'text-gray-900 hover:text-blue-600'}`} onDoubleClick={() => handleCategoryDoubleClick(category)}>{category.name}</div>
+                              <div className={`p-2 ${cc.bg} rounded-lg cursor-pointer`} onClick={() => handleCategoryClick(category)}><Icon className={`w-5 h-5 ${cc.text}`} /></div>
+                              <div className={`font-medium cursor-pointer ${isDarkMode ? 'text-white hover:text-blue-400' : 'text-gray-900 hover:text-blue-600'}`} onClick={() => handleCategoryClick(category)}>{category.name}</div>
                             </div>
                           </td>
                           <td className={`p-4 text-sm max-w-xs truncate ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{category.description}</td>
@@ -1490,7 +1490,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                           <td className="p-4">
                             <div className="flex items-center gap-1">
                               {hasPermission(CategoryPermissions.EDIT)   && <button onClick={() => openModal('edit',   'category', category)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Edit3  className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-400 hover:text-blue-600'}`} /></button>}
-                              {hasPermission(CategoryPermissions.DELETE) && <button onClick={() => openModal('delete', 'category', category)} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400'  : 'text-gray-400 hover:text-red-600'}`}  /></button>}
+                              {hasPermission(CategoryPermissions.DELETE) && <button onClick={e => { e.stopPropagation(); openModal('delete', 'category', category); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-gray-100'}`}><Trash2 className={`w-4 h-4 ${isDarkMode ? 'text-gray-400 hover:text-red-400'  : 'text-gray-400 hover:text-red-600'}`}  /></button>}
                             </div>
                           </td>
                         </tr>
@@ -1528,7 +1528,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                       <div className="flex items-center justify-between mb-4">
                         <div
                           className={`p-3 rounded-lg ${isSelectMode ? 'ml-6' : ''} ${isDarkMode ? 'bg-gray-600' : 'bg-yellow-50'}`}
-                          onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}>
+                          onClick={() => !isSelectMode && handleFolderClick(folder)}>
                           <Folder className={isDarkMode ? 'w-6 h-6 text-yellow-400' : 'w-6 h-6 text-yellow-600'} />
                         </div>
                         {!isSelectMode && (
@@ -1551,7 +1551,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                           </div>
                         )}
                       </div>
-                      <h3 className={`font-semibold mb-1 group-hover:text-blue-600 cursor-pointer truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`} onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}>{folder.name}</h3>
+                      <h3 className={`font-semibold mb-1 group-hover:text-blue-600 cursor-pointer truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`} onClick={() => !isSelectMode && handleFolderClick(folder)}>{folder.name}</h3>
                       <p className={`text-sm mb-3 line-clamp-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{folder.description}</p>
                       <div className={`pt-3 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-100'}`}>
                         <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{formatDate(folder.created_at)}</div>
@@ -1645,12 +1645,12 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                   <tbody className={`divide-y ${isDarkMode ? 'divide-gray-700' : 'divide-gray-100'}`}>
                     {/* FOLDER ROWS */}
                     {(filteredData() as any).folders?.map((folder: Folder) => (
-                      <tr key={`folder-${folder.id}`} className={`transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
+                      <tr key={`folder-${folder.id}`} onClick={() => !isSelectMode && handleFolderClick(folder)} className={`transition-colors cursor-pointer ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
                         <td className="p-4">
                           <div className="flex items-center gap-3">
                             {isSelectMode && <input type="checkbox" checked={selectedFolders.includes(folder.id)} onChange={() => toggleFolderSelection(folder.id)} className="w-4 h-4 rounded accent-blue-600 cursor-pointer" onClick={e => e.stopPropagation()} />}
-                            <div className={`p-2 rounded-lg cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-yellow-50'}`} onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}><Folder className={isDarkMode ? 'w-5 h-5 text-yellow-400' : 'w-5 h-5 text-yellow-600'} /></div>
-                            <div className={`font-medium cursor-pointer ${isDarkMode ? 'text-white hover:text-blue-400' : 'text-gray-900 hover:text-blue-600'}`} onDoubleClick={() => !isSelectMode && handleFolderDoubleClick(folder)}>{folder.name}</div>
+                            <div className={`p-2 rounded-lg cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-yellow-50'}`} onClick={() => !isSelectMode && handleFolderClick(folder)}><Folder className={isDarkMode ? 'w-5 h-5 text-yellow-400' : 'w-5 h-5 text-yellow-600'} /></div>
+                            <div className={`font-medium cursor-pointer ${isDarkMode ? 'text-white hover:text-blue-400' : 'text-gray-900 hover:text-blue-600'}`} onClick={() => !isSelectMode && handleFolderClick(folder)}>{folder.name}</div>
                           </div>
                         </td>
                         <td className={`p-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Folder</td>

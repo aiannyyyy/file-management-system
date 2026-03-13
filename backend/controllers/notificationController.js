@@ -1,4 +1,4 @@
-//const inhouseDb = require('../db');
+//notificationController.js
 const inhouseDb = require("../dbInhouse");
 
 class NotificationController {

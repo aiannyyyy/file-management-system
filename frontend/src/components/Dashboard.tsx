@@ -1297,133 +1297,196 @@ export default function Dashboard({ currentUser }: DashboardProps) {
 
       {/* STARRED FILE PREVIEW MODAL */}
       {showStarredPreviewModal && starredPreviewFile && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[9999] p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                <Star className="w-5 h-5 text-yellow-500 fill-current flex-shrink-0" />
-                <div className="min-w-0">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white truncate">
-                    {starredPreviewFile.name || starredPreviewFile.original_name}
-                  </h3>
-                  <p className="text-sm text-gray-500">
-                    {formatFileSize(starredPreviewFile.file_size)} • By {starredPreviewFile.created_by_name || 'Unknown'}
-                  </p>
-                </div>
+        <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: '#1a1a1a' }}>
+
+          {/* Top Bar */}
+          <div className="flex items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-700 flex-shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 bg-yellow-500 rounded flex items-center justify-center flex-shrink-0">
+                <Star className="w-4 h-4 text-white fill-current" />
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                <button
-                  onClick={() => handleDownloadStarredFile(starredPreviewFile)}
-                  className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  Download
-                </button>
-                <button
-                  onClick={closeStarredPreview}
-                  className="p-2 text-gray-400 hover:text-gray-600 dark:text-gray-300 rounded-md transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+              <div className="min-w-0">
+                <p className="text-sm font-medium truncate text-white leading-tight">
+                  {starredPreviewFile.name || starredPreviewFile.original_name}
+                </p>
+                <p className="text-xs text-gray-400 leading-tight">
+                  {formatFileSize(starredPreviewFile.file_size)} • {starredPreviewFile.file_type?.toUpperCase()} • By {starredPreviewFile.created_by_name || 'Unknown'}
+                </p>
               </div>
             </div>
-            <div className="flex-1 overflow-auto bg-gray-50 dark:bg-gray-900">
-              {starredPreviewLoading ? (
-                <div className="flex items-center justify-center h-full min-h-[400px]">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                    <span className="text-gray-600 dark:text-gray-300 font-medium">Loading preview...</span>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">This may take a few moments</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-6">
-                  {canPreviewFile(starredPreviewFile.file_type) ? renderStarredPreview() : (
-                    <div className="text-center py-12">
-                      <File className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                      <h4 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Preview Not Available</h4>
-                      <p className="text-gray-600 dark:text-gray-300 mb-6 max-w-md mx-auto">
-                        This file type ({starredPreviewFile.file_type?.toUpperCase()}) cannot be previewed in the browser.
-                      </p>
-                      <button
-                        onClick={() => handleDownloadStarredFile(starredPreviewFile)}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-                      >
-                        <Download className="w-4 h-4" />
-                        Download File
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
+            <div className="flex items-center gap-1 flex-shrink-0 ml-4">
+              <button
+                onClick={() => handleDownloadStarredFile(starredPreviewFile)}
+                title="Download"
+                className="p-2 rounded-lg text-gray-400 hover:text-green-400 hover:bg-gray-700 transition-colors"
+              >
+                <Download className="w-5 h-5" />
+              </button>
+              <div className="w-px h-5 bg-gray-600 mx-1" />
+              <button
+                onClick={closeStarredPreview}
+                className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
           </div>
+
+          {/* Meta strip */}
+          <div className="flex items-center justify-between px-4 py-2 bg-gray-800 text-xs text-gray-400 flex-shrink-0 border-b border-gray-700">
+            <span>Category: <span className="text-gray-300 font-medium">{starredPreviewFile.category_name || 'Uncategorized'}</span></span>
+            <span>Starred {formatTimeAgo(starredPreviewFile.starred_at || starredPreviewFile.created_at)}</span>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 overflow-hidden bg-gray-700 flex items-center justify-center">
+            {starredPreviewLoading ? (
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
+                <span className="text-gray-300 font-medium">Loading preview...</span>
+              </div>
+            ) : canPreviewFile(starredPreviewFile.file_type) ? (
+              (() => {
+                const fileType = starredPreviewFile.file_type?.toLowerCase();
+                const fileId = starredPreviewFile.source_type === 'regular'
+                  ? (starredPreviewFile.file_id || starredPreviewFile.id)
+                  : starredPreviewFile.id;
+                const previewUrl = starredPreviewFile.source_type === 'category'
+                  ? `http://localhost:3002/api/files/${fileId}/preview?user_id=${currentUser.id}`
+                  : `http://localhost:3002/api/files/preview/${fileId}`;
+
+                if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(fileType || '')) {
+                  return (
+                    <img
+                      src={previewUrl}
+                      alt={starredPreviewFile.name}
+                      className="max-w-full max-h-full object-contain"
+                      onLoad={() => setStarredPreviewLoading(false)}
+                      onError={() => setStarredPreviewLoading(false)}
+                    />
+                  );
+                }
+                if (fileType === 'pdf') {
+                  return <iframe src={previewUrl} className="w-full h-full border-0" title={starredPreviewFile.name} onLoad={() => setStarredPreviewLoading(false)} />;
+                }
+                if (['txt','csv','json','xml','html','css','js','md'].includes(fileType || '')) {
+                  return <iframe src={previewUrl} className="w-full h-full border-0 bg-white" title={starredPreviewFile.name} onLoad={() => setStarredPreviewLoading(false)} />;
+                }
+                return null;
+              })()
+            ) : (
+              <div className="text-center">
+                <div className="w-20 h-20 bg-gray-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <File className="w-10 h-10 text-gray-400" />
+                </div>
+                <h4 className="text-lg font-semibold text-white mb-2">Preview Not Available</h4>
+                <p className="text-gray-400 text-sm mb-6">This file type cannot be previewed in the browser.</p>
+                <button
+                  onClick={() => handleDownloadStarredFile(starredPreviewFile)}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  <Download className="w-4 h-4" /> Download to View
+                </button>
+              </div>
+            )}
+          </div>
+
         </div>
       )}
 
       {/* SHARED FILE PREVIEW MODAL */}
       {showFilePreviewModal && previewFile && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[9999] p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                <div className="flex-shrink-0">{getFileIcon(previewFile.file_type)}</div>
-                <div className="min-w-0">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white truncate">
-                    {previewFile.file_name || previewFile.original_name}
-                  </h3>
-                  <p className="text-sm text-gray-500">
-                    {formatFileSize(previewFile.file_size)} • Owner: {previewFile.owner_name}
-                  </p>
-                </div>
+        <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: '#1a1a1a' }}>
+
+          {/* Top Bar */}
+          <div className="flex items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-700 flex-shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center flex-shrink-0">
+                {getFileIcon(previewFile.file_type)}
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                <button
-                  onClick={() => handleDownloadSharedFile(previewFile)}
-                  className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  Download
-                </button>
-                <button
-                  onClick={closeSharedPreview}
-                  className="p-2 text-gray-400 hover:text-gray-600 dark:text-gray-300 rounded-md transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+              <div className="min-w-0">
+                <p className="text-sm font-medium truncate text-white leading-tight">
+                  {previewFile.file_name || previewFile.original_name}
+                </p>
+                <p className="text-xs text-gray-400 leading-tight">
+                  {formatFileSize(previewFile.file_size)} • {previewFile.file_type?.toUpperCase()}
+                </p>
               </div>
             </div>
-            <div className="flex-1 overflow-auto bg-gray-50 dark:bg-gray-900">
-              {previewLoading ? (
-                <div className="flex items-center justify-center h-full min-h-[400px]">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                    <span className="text-gray-600 dark:text-gray-300 font-medium">Loading preview...</span>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">This may take a few moments</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-6">
-                  {canPreviewFile(previewFile.file_type) ? renderSharedFilePreview() : (
-                    <div className="text-center py-12">
-                      <File className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                      <h4 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Preview Not Available</h4>
-                      <p className="text-gray-600 dark:text-gray-300 mb-6 max-w-md mx-auto">
-                        This file type ({previewFile.file_type?.toUpperCase()}) cannot be previewed in the browser.
-                      </p>
-                      <button
-                        onClick={() => handleDownloadSharedFile(previewFile)}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-                      >
-                        <Download className="w-4 h-4" />
-                        Download File
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
+            <div className="flex items-center gap-1 flex-shrink-0 ml-4">
+              <button
+                onClick={() => handleDownloadSharedFile(previewFile)}
+                title="Download"
+                className="p-2 rounded-lg text-gray-400 hover:text-green-400 hover:bg-gray-700 transition-colors"
+              >
+                <Download className="w-5 h-5" />
+              </button>
+              <div className="w-px h-5 bg-gray-600 mx-1" />
+              <button
+                onClick={closeSharedPreview}
+                className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
           </div>
+
+          {/* Meta strip */}
+          <div className="flex items-center justify-between px-4 py-2 bg-gray-800 text-xs text-gray-400 flex-shrink-0 border-b border-gray-700">
+            <span>Owner: <span className="text-gray-300 font-medium">{previewFile.owner_name}</span></span>
+            <span>Shared {formatTimeAgo(previewFile.shared_at)}</span>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 overflow-hidden bg-gray-700 flex items-center justify-center">
+            {previewLoading ? (
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
+                <span className="text-gray-300 font-medium">Loading preview...</span>
+              </div>
+            ) : canPreviewFile(previewFile.file_type) ? (
+              (() => {
+                const fileType = previewFile.file_type?.toLowerCase();
+                const previewUrl = previewFile.source_type === 'category'
+                  ? `http://localhost:3002/api/files/${previewFile.id}/preview?user_id=${currentUser.id}`
+                  : `http://localhost:3002/api/files/preview/${previewFile.id}`;
+
+                if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(fileType || '')) {
+                  return (
+                    <img
+                      src={previewUrl}
+                      alt={previewFile.file_name}
+                      className="max-w-full max-h-full object-contain"
+                      onLoad={() => setPreviewLoading(false)}
+                      onError={() => setPreviewLoading(false)}
+                    />
+                  );
+                }
+                if (fileType === 'pdf') {
+                  return <iframe src={previewUrl} className="w-full h-full border-0" title={previewFile.file_name} onLoad={() => setPreviewLoading(false)} />;
+                }
+                if (['txt','csv','json','xml','html','css','js','md'].includes(fileType || '')) {
+                  return <iframe src={previewUrl} className="w-full h-full border-0 bg-white" title={previewFile.file_name} onLoad={() => setPreviewLoading(false)} />;
+                }
+                return null;
+              })()
+            ) : (
+              <div className="text-center">
+                <div className="w-20 h-20 bg-gray-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <File className="w-10 h-10 text-gray-400" />
+                </div>
+                <h4 className="text-lg font-semibold text-white mb-2">Preview Not Available</h4>
+                <p className="text-gray-400 text-sm mb-6">This file type cannot be previewed in the browser.</p>
+                <button
+                  onClick={() => handleDownloadSharedFile(previewFile)}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  <Download className="w-4 h-4" /> Download to View
+                </button>
+              </div>
+            )}
+          </div>
+
         </div>
       )}
 
