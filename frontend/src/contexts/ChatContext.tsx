@@ -96,6 +96,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
 
   const typingPollInterval = useRef<NodeJS.Timeout | null>(null);
   const conversationsPollInterval = useRef<NodeJS.Timeout | null>(null);
+  const conversationsPollFailures = useRef(0);
 
   const API_URL = 'http://localhost:3002';
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
@@ -522,27 +523,37 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        
-        // ✅ CRITICAL FIX: Preserve read state during polling
-        setConversations(data.map((newConv: any) => {
-          // If this conversation was just marked as read
-          if (newConv.id === lastReadConversationRef.current) {
-            return { ...newConv, unreadCount: 0 };
-          }
-          
-          // If this is the active conversation being viewed
-          if (newConv.id === activeConversationRef.current) {
-            return { ...newConv, unreadCount: 0 };
-          }
-          
-          // Otherwise use server data
-          return newConv;
-        }));
+      if (!response.ok) {
+        conversationsPollFailures.current += 1;
+        if (conversationsPollFailures.current === 1) {
+          console.error('Error polling conversations:', response.status, await response.text());
+        }
+        if (conversationsPollFailures.current >= 3 && conversationsPollInterval.current) {
+          clearInterval(conversationsPollInterval.current);
+          conversationsPollInterval.current = null;
+        }
+        return;
       }
+
+      conversationsPollFailures.current = 0;
+      const data = await response.json();
+      
+      setConversations(data.map((newConv: any) => {
+        if (newConv.id === lastReadConversationRef.current) {
+          return { ...newConv, unreadCount: 0 };
+        }
+        
+        if (newConv.id === activeConversationRef.current) {
+          return { ...newConv, unreadCount: 0 };
+        }
+        
+        return newConv;
+      }));
     } catch (error) {
-      console.error('Error polling conversations:', error);
+      conversationsPollFailures.current += 1;
+      if (conversationsPollFailures.current === 1) {
+        console.error('Error polling conversations:', error);
+      }
     }
   }, [token, API_URL]);
 
@@ -598,12 +609,15 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
       newSocket.on('connect', () => {
         console.log('✅ Connected to socket server');
         setIsConnected(true);
+        conversationsPollFailures.current = 0;
 
         newSocket.emit('user-join', {
           userId: userData.id,
           userName: userData.user_name,
           email: userData.email
         });
+
+        getConversations();
       });
 
       newSocket.on('connect_error', (error: any) => {
@@ -695,7 +709,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
     } catch (error) {
       console.error('Failed to initialize socket:', error);
     }
-  }, [API_URL, token, pollConversations]);
+  }, [API_URL, token, pollConversations, getConversations]);
 
   // ============================================
   // DISCONNECT SOCKET

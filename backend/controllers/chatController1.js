@@ -1,10 +1,10 @@
-const db = require('../db');
+﻿const db = require('../config/db');
 
 // ============================================
 // HELPER: Log query execution time
 // ============================================
 const logQuery = (functionName, duration) => {
-  console.log(`⏱️  [${functionName}] Query took ${duration}ms`);
+  console.log(`â±ï¸  [${functionName}] Query took ${duration}ms`);
 };
 
 // ============================================
@@ -14,7 +14,7 @@ exports.getConversations = async (req, res) => {
   const startTime = Date.now();
   const userId = req.user.id;
 
-  console.log(`\n🔍 [getConversations] Started for userId: ${userId}`);
+  console.log(`\nðŸ” [getConversations] Started for userId: ${userId}`);
 
   try {
     const query = `
@@ -49,14 +49,14 @@ exports.getConversations = async (req, res) => {
       LIMIT 50
     `;
 
-    console.log(`📝 Executing query...`);
+    console.log(`ðŸ“ Executing query...`);
     const [results] = await db.query(query, [userId, userId]);
     
-    // ✅ ADD THIS LINE HERE TO SEE WHAT'S BEING RETURNED
-    console.log('📊 Results sample:', JSON.stringify(results[0], null, 2));
+    // âœ… ADD THIS LINE HERE TO SEE WHAT'S BEING RETURNED
+    console.log('ðŸ“Š Results sample:', JSON.stringify(results[0], null, 2));
     
     logQuery('getConversations', Date.now() - startTime);
-    console.log(`✅ [getConversations] Returned ${results.length} conversations\n`);
+    console.log(`âœ… [getConversations] Returned ${results.length} conversations\n`);
     
     // Log the results to see what's being returned
     results.forEach(r => {
@@ -65,7 +65,7 @@ exports.getConversations = async (req, res) => {
     
     res.json(results || []);
   } catch (err) {
-    console.error('❌ [getConversations] Error:', err.message);
+    console.error('âŒ [getConversations] Error:', err.message);
     res.status(500).json({ error: 'Failed to fetch conversations', details: err.message });
   }
 };
@@ -80,8 +80,8 @@ exports.getMessages = async (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   const offset = parseInt(req.query.offset) || 0;
 
-  console.log(`\n🔍 [getMessages] Started for conversationId: ${conversationId}, userId: ${userId}`);
-  console.log(`📊 Pagination: limit=${limit}, offset=${offset}`);
+  console.log(`\nðŸ” [getMessages] Started for conversationId: ${conversationId}, userId: ${userId}`);
+  console.log(`ðŸ“Š Pagination: limit=${limit}, offset=${offset}`);
 
   try {
     // Verify membership
@@ -94,7 +94,7 @@ exports.getMessages = async (req, res) => {
     const [verification] = await db.query(verifyQuery, [conversationId, userId]);
 
     if (verification.length === 0) {
-      console.error(`❌ User ${userId} is not a member of conversation ${conversationId}`);
+      console.error(`âŒ User ${userId} is not a member of conversation ${conversationId}`);
       return res.status(403).json({ error: 'You are not a member of this conversation' });
     }
 
@@ -120,14 +120,14 @@ exports.getMessages = async (req, res) => {
       LIMIT ? OFFSET ?
     `;
 
-    console.log(`📝 Fetching messages...`);
+    console.log(`ðŸ“ Fetching messages...`);
     const [results] = await db.query(messageQuery, [conversationId, limit, offset]);
 
     logQuery('getMessages', Date.now() - startTime);
-    console.log(`✅ [getMessages] Returned ${results.length} messages\n`);
+    console.log(`âœ… [getMessages] Returned ${results.length} messages\n`);
     res.json(results.reverse());
   } catch (err) {
-    console.error('❌ [getMessages] Error:', err.message);
+    console.error('âŒ [getMessages] Error:', err.message);
     res.status(500).json({ error: 'Failed to fetch messages', details: err.message });
   }
 };
@@ -140,13 +140,13 @@ exports.sendMessage = async (req, res) => {
   const { conversationId, content, messageType, fileUrl } = req.body;
   const senderId = req.user.id;
 
-  console.log(`\n🔍 [sendMessage] Started`);
-  console.log(`👤 Sender: ${senderId}, Conversation: ${conversationId}`);
-  console.log(`📝 Content: ${content?.substring(0, 50)}...`);
-  console.log(`🏷️  Type: ${messageType || 'text'}`);
+  console.log(`\nðŸ” [sendMessage] Started`);
+  console.log(`ðŸ‘¤ Sender: ${senderId}, Conversation: ${conversationId}`);
+  console.log(`ðŸ“ Content: ${content?.substring(0, 50)}...`);
+  console.log(`ðŸ·ï¸  Type: ${messageType || 'text'}`);
 
   if (!conversationId || !content) {
-    console.warn(`⚠️  Missing required fields`);
+    console.warn(`âš ï¸  Missing required fields`);
     return res.status(400).json({ error: 'conversationId and content are required' });
   }
 
@@ -158,15 +158,15 @@ exports.sendMessage = async (req, res) => {
       LIMIT 1
     `;
 
-    console.log(`🔐 Verifying membership...`);
+    console.log(`ðŸ” Verifying membership...`);
     const [verification] = await db.query(verifyQuery, [conversationId, senderId]);
 
     if (verification.length === 0) {
-      console.error(`❌ User ${senderId} not a member of conversation ${conversationId}`);
+      console.error(`âŒ User ${senderId} not a member of conversation ${conversationId}`);
       return res.status(403).json({ error: 'You are not a member of this conversation' });
     }
 
-    console.log(`✅ Membership verified`);
+    console.log(`âœ… Membership verified`);
 
     // Insert message
     const insertQuery = `
@@ -175,10 +175,10 @@ exports.sendMessage = async (req, res) => {
     `;
 
     const type = messageType || 'text';
-    console.log(`📝 Inserting message...`);
+    console.log(`ðŸ“ Inserting message...`);
     const [result] = await db.query(insertQuery, [conversationId, senderId, content, type, fileUrl || null]);
 
-    console.log(`✅ Message inserted with ID: ${result.insertId}`);
+    console.log(`âœ… Message inserted with ID: ${result.insertId}`);
 
     // Fetch the inserted message
     const selectQuery = `
@@ -204,10 +204,10 @@ exports.sendMessage = async (req, res) => {
     const [messageData] = await db.query(selectQuery, [result.insertId]);
 
     logQuery('sendMessage', Date.now() - startTime);
-    console.log(`✅ [sendMessage] Message sent successfully\n`);
+    console.log(`âœ… [sendMessage] Message sent successfully\n`);
     res.status(201).json(messageData[0]);
   } catch (err) {
-    console.error('❌ [sendMessage] Error:', err.message);
+    console.error('âŒ [sendMessage] Error:', err.message);
     res.status(500).json({ error: 'Failed to send message', details: err.message });
   }
 };
@@ -220,10 +220,10 @@ exports.markAsRead = async (req, res) => {
   const { conversationId } = req.body;
   const userId = req.user.id;
 
-  console.log(`\n🔍 [markAsRead] Started for conversationId: ${conversationId}, userId: ${userId}`);
+  console.log(`\nðŸ” [markAsRead] Started for conversationId: ${conversationId}, userId: ${userId}`);
 
   if (!conversationId) {
-    console.warn(`⚠️  conversationId is required`);
+    console.warn(`âš ï¸  conversationId is required`);
     return res.status(400).json({ error: 'conversationId is required' });
   }
 
@@ -234,14 +234,14 @@ exports.markAsRead = async (req, res) => {
       WHERE conversationId = ? AND senderId != ? AND isDeleted = FALSE
     `;
 
-    console.log(`📝 Marking messages as read...`);
+    console.log(`ðŸ“ Marking messages as read...`);
     const [result] = await db.query(query, [conversationId, userId]);
 
     logQuery('markAsRead', Date.now() - startTime);
-    console.log(`✅ [markAsRead] Marked ${result.affectedRows} messages as read\n`);
+    console.log(`âœ… [markAsRead] Marked ${result.affectedRows} messages as read\n`);
     res.json({ message: 'Messages marked as read', affectedRows: result.affectedRows });
   } catch (err) {
-    console.error('❌ [markAsRead] Error:', err.message);
+    console.error('âŒ [markAsRead] Error:', err.message);
     res.status(500).json({ error: 'Failed to mark messages as read', details: err.message });
   }
 };
@@ -254,31 +254,31 @@ exports.createConversation = async (req, res) => {
   const { otherUserId } = req.body;
   const userId = req.user.id;
 
-  console.log(`\n🔍 [createConversation] Started`);
-  console.log(`👤 Current user: ${userId}, Target user: ${otherUserId}`);
+  console.log(`\nðŸ” [createConversation] Started`);
+  console.log(`ðŸ‘¤ Current user: ${userId}, Target user: ${otherUserId}`);
 
   if (!otherUserId) {
-    console.warn(`⚠️  otherUserId is required`);
+    console.warn(`âš ï¸  otherUserId is required`);
     return res.status(400).json({ error: 'otherUserId is required' });
   }
 
   if (userId === parseInt(otherUserId)) {
-    console.warn(`⚠️  User cannot chat with themselves`);
+    console.warn(`âš ï¸  User cannot chat with themselves`);
     return res.status(400).json({ error: 'Cannot create conversation with yourself' });
   }
 
   try {
-    console.log(`🔐 Checking if user exists...`);
+    console.log(`ðŸ” Checking if user exists...`);
     const userCheckQuery = `SELECT id, user_name FROM users WHERE id = ? LIMIT 1`;
     const [userData] = await db.query(userCheckQuery, [otherUserId]);
 
     if (userData.length === 0) {
-      console.error(`❌ User ${otherUserId} not found`);
+      console.error(`âŒ User ${otherUserId} not found`);
       return res.status(404).json({ error: 'User not found' });
     }
 
-    console.log(`✅ User found: ${userData[0].user_name}`);
-    console.log(`🔍 Checking if conversation already exists...`);
+    console.log(`âœ… User found: ${userData[0].user_name}`);
+    console.log(`ðŸ” Checking if conversation already exists...`);
 
     // Check if conversation exists
     const checkQuery = `
@@ -293,12 +293,12 @@ exports.createConversation = async (req, res) => {
     const [existing] = await db.query(checkQuery, [userId, otherUserId]);
 
     if (existing.length > 0) {
-      console.log(`✅ Existing conversation found: ${existing[0].id}`);
+      console.log(`âœ… Existing conversation found: ${existing[0].id}`);
       logQuery('createConversation', Date.now() - startTime);
       return res.json({ id: existing[0].id, isNew: false });
     }
 
-    console.log(`📝 Creating new conversation...`);
+    console.log(`ðŸ“ Creating new conversation...`);
 
     const conversationName = `Direct Chat with ${userData[0].user_name}`;
     const createQuery = `
@@ -308,9 +308,9 @@ exports.createConversation = async (req, res) => {
 
     const [createResult] = await db.query(createQuery, [conversationName, 'direct', userId]);
     const conversationId = createResult.insertId;
-    console.log(`✅ Conversation created with ID: ${conversationId}`);
+    console.log(`âœ… Conversation created with ID: ${conversationId}`);
 
-    console.log(`👥 Adding members to conversation...`);
+    console.log(`ðŸ‘¥ Adding members to conversation...`);
 
     const memberQuery = `
       INSERT INTO conversation_members (conversationId, userId, joinedAt)
@@ -320,10 +320,10 @@ exports.createConversation = async (req, res) => {
     await db.query(memberQuery, [conversationId, userId, conversationId, otherUserId]);
 
     logQuery('createConversation', Date.now() - startTime);
-    console.log(`✅ [createConversation] Conversation created and members added\n`);
+    console.log(`âœ… [createConversation] Conversation created and members added\n`);
     res.status(201).json({ id: conversationId, isNew: true });
   } catch (err) {
-    console.error('❌ [createConversation] Error:', err.message);
+    console.error('âŒ [createConversation] Error:', err.message);
     res.status(500).json({ error: 'Failed to create conversation', details: err.message });
   }
 };
@@ -336,10 +336,10 @@ exports.deleteMessage = async (req, res) => {
   const { messageId } = req.params;
   const userId = req.user.id;
 
-  console.log(`\n🔍 [deleteMessage] Started for messageId: ${messageId}, userId: ${userId}`);
+  console.log(`\nðŸ” [deleteMessage] Started for messageId: ${messageId}, userId: ${userId}`);
 
   if (!messageId) {
-    console.warn(`⚠️  messageId is required`);
+    console.warn(`âš ï¸  messageId is required`);
     return res.status(400).json({ error: 'messageId is required' });
   }
 
@@ -350,19 +350,19 @@ exports.deleteMessage = async (req, res) => {
       WHERE id = ? AND senderId = ?
     `;
 
-    console.log(`📝 Deleting message...`);
+    console.log(`ðŸ“ Deleting message...`);
     const [result] = await db.query(query, [messageId, userId]);
 
     if (result.affectedRows === 0) {
-      console.error(`❌ User ${userId} cannot delete message ${messageId}`);
+      console.error(`âŒ User ${userId} cannot delete message ${messageId}`);
       return res.status(403).json({ error: 'Unauthorized - You can only delete your own messages' });
     }
 
     logQuery('deleteMessage', Date.now() - startTime);
-    console.log(`✅ [deleteMessage] Message deleted successfully\n`);
+    console.log(`âœ… [deleteMessage] Message deleted successfully\n`);
     res.json({ message: 'Message deleted successfully' });
   } catch (err) {
-    console.error('❌ [deleteMessage] Error:', err.message);
+    console.error('âŒ [deleteMessage] Error:', err.message);
     res.status(500).json({ error: 'Failed to delete message', details: err.message });
   }
 };
@@ -375,10 +375,10 @@ exports.updateUserStatus = async (req, res) => {
   const { isOnline } = req.body;
   const userId = req.user.id;
 
-  console.log(`\n🔍 [updateUserStatus] Started for userId: ${userId}, isOnline: ${isOnline}`);
+  console.log(`\nðŸ” [updateUserStatus] Started for userId: ${userId}, isOnline: ${isOnline}`);
 
   if (isOnline === undefined) {
-    console.warn(`⚠️  isOnline is required`);
+    console.warn(`âš ï¸  isOnline is required`);
     return res.status(400).json({ error: 'isOnline is required' });
   }
 
@@ -391,14 +391,14 @@ exports.updateUserStatus = async (req, res) => {
       lastSeen = NOW()
     `;
 
-    console.log(`📝 Updating status...`);
+    console.log(`ðŸ“ Updating status...`);
     await db.query(query, [userId, isOnline]);
 
     logQuery('updateUserStatus', Date.now() - startTime);
-    console.log(`✅ [updateUserStatus] Status updated to ${isOnline}\n`);
+    console.log(`âœ… [updateUserStatus] Status updated to ${isOnline}\n`);
     res.json({ message: 'Status updated successfully', isOnline });
   } catch (err) {
-    console.error('❌ [updateUserStatus] Error:', err.message);
+    console.error('âŒ [updateUserStatus] Error:', err.message);
     res.status(500).json({ error: 'Failed to update status', details: err.message });
   }
 };
@@ -409,7 +409,7 @@ exports.updateUserStatus = async (req, res) => {
 exports.getUserStatus = async (req, res) => {
   const startTime = Date.now();
 
-  console.log(`\n🔍 [getUserStatus] Started`);
+  console.log(`\nðŸ” [getUserStatus] Started`);
 
   try {
     const query = `
@@ -425,14 +425,14 @@ exports.getUserStatus = async (req, res) => {
       LIMIT 100
     `;
 
-    console.log(`📝 Fetching user status...`);
+    console.log(`ðŸ“ Fetching user status...`);
     const [results] = await db.query(query);
 
     logQuery('getUserStatus', Date.now() - startTime);
-    console.log(`✅ [getUserStatus] Returned status for ${results.length} users\n`);
+    console.log(`âœ… [getUserStatus] Returned status for ${results.length} users\n`);
     res.json(results);
   } catch (err) {
-    console.error('❌ [getUserStatus] Error:', err.message);
+    console.error('âŒ [getUserStatus] Error:', err.message);
     res.status(500).json({ error: 'Failed to fetch user status', details: err.message });
   }
 };
@@ -445,11 +445,11 @@ exports.searchMessages = async (req, res) => {
   const { conversationId, searchTerm } = req.query;
   const userId = req.user.id;
 
-  console.log(`\n🔍 [searchMessages] Started`);
-  console.log(`🔎 Search term: "${searchTerm}", conversationId: ${conversationId}, userId: ${userId}`);
+  console.log(`\nðŸ” [searchMessages] Started`);
+  console.log(`ðŸ”Ž Search term: "${searchTerm}", conversationId: ${conversationId}, userId: ${userId}`);
 
   if (!conversationId || !searchTerm) {
-    console.warn(`⚠️  conversationId and searchTerm are required`);
+    console.warn(`âš ï¸  conversationId and searchTerm are required`);
     return res.status(400).json({ error: 'conversationId and searchTerm are required' });
   }
 
@@ -461,15 +461,15 @@ exports.searchMessages = async (req, res) => {
       LIMIT 1
     `;
 
-    console.log(`🔐 Verifying membership...`);
+    console.log(`ðŸ” Verifying membership...`);
     const [verification] = await db.query(verifyQuery, [conversationId, userId]);
 
     if (verification.length === 0) {
-      console.error(`❌ User ${userId} not a member of conversation ${conversationId}`);
+      console.error(`âŒ User ${userId} not a member of conversation ${conversationId}`);
       return res.status(403).json({ error: 'You are not a member of this conversation' });
     }
 
-    console.log(`✅ Membership verified, searching...`);
+    console.log(`âœ… Membership verified, searching...`);
 
     const searchQuery = `
       SELECT 
@@ -488,14 +488,14 @@ exports.searchMessages = async (req, res) => {
       LIMIT 50
     `;
 
-    console.log(`📝 Searching messages...`);
+    console.log(`ðŸ“ Searching messages...`);
     const [results] = await db.query(searchQuery, [conversationId, `%${searchTerm}%`]);
 
     logQuery('searchMessages', Date.now() - startTime);
-    console.log(`✅ [searchMessages] Found ${results.length} results\n`);
+    console.log(`âœ… [searchMessages] Found ${results.length} results\n`);
     res.json(results);
   } catch (err) {
-    console.error('❌ [searchMessages] Error:', err.message);
+    console.error('âŒ [searchMessages] Error:', err.message);
     res.status(500).json({ error: 'Failed to search messages', details: err.message });
   }
 };

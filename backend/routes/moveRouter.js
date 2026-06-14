@@ -1,6 +1,6 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
-const inhouseDb = require('../dbInhouse');
+const db = require("../config/db");
 const validator = require('validator');
 const fs = require('fs');
 const path = require('path');
@@ -14,7 +14,7 @@ const MOVE_HISTORY_LIMIT = 10;
 // ================== Helper: Validate User ==================
 async function validateUser(userId) {
   try {
-    const [rows] = await inhouseDb.query('SELECT id FROM users WHERE id = ?', [userId]);
+    const [rows] = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
     return rows.length > 0;
   } catch (error) {
     console.error('Error validating user:', error);
@@ -31,10 +31,10 @@ function sanitizeInput(input) {
 // ================== Helper: Add Activity Log ==================
 async function addActivityLog(userId, action, targetType, targetId, targetName, additionalInfo = null) {
   try {
-    await inhouseDb.query(
+    await db.query(
       `INSERT INTO activity_logs 
        (user_id, action, target_type, target_id, target_name, additional_info, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       [userId, action, targetType, targetId, targetName, additionalInfo]
     );
   } catch (error) {
@@ -45,7 +45,7 @@ async function addActivityLog(userId, action, targetType, targetId, targetName, 
 // ================== Helper: Get Folder Content Depth ==================
 async function getFolderContentDepth(folderId, currentDepth = 1) {
   if (currentDepth > MAX_FOLDER_DEPTH) return currentDepth;
-  const [subFolders] = await inhouseDb.query('SELECT id FROM folders WHERE parent_id = ?', [folderId]);
+  const [subFolders] = await db.query('SELECT id FROM folders WHERE parent_id = $1', [folderId]);
   if (subFolders.length === 0) return currentDepth;
   let maxDepth = currentDepth;
   for (const subFolder of subFolders) {
@@ -61,7 +61,7 @@ async function checkCircularReference(folderId, targetParentId) {
   if (String(folderId) === String(targetParentId)) return true;
   let currentId = targetParentId;
   while (currentId) {
-    const [rows] = await inhouseDb.query('SELECT parent_id FROM folders WHERE id = ?', [currentId]);
+    const [rows] = await db.query('SELECT parent_id FROM folders WHERE id = $1', [currentId]);
     if (rows.length === 0) break;
     currentId = rows[0].parent_id;
     if (String(currentId) === String(folderId)) return true;
@@ -75,7 +75,7 @@ async function checkFileConflict(fileName, targetFolderId) {
     ? 'SELECT id, file_name, file_path, file_size, file_type, folder_id FROM files WHERE file_name = ? AND folder_id = ?'
     : 'SELECT id, file_name, file_path, file_size, file_type, folder_id FROM files WHERE file_name = ? AND folder_id IS NULL';
   const params = targetFolderId ? [fileName, targetFolderId] : [fileName];
-  const [rows] = await inhouseDb.query(query, params);
+  const [rows] = await db.query(query, params);
   return rows.length > 0 ? rows[0] : null;
 }
 
@@ -85,14 +85,14 @@ async function checkFolderConflict(folderName, targetParentId) {
     ? 'SELECT id, name FROM folders WHERE name = ? AND parent_id = ?'
     : 'SELECT id, name FROM folders WHERE name = ? AND parent_id IS NULL';
   const params = targetParentId ? [folderName, targetParentId] : [folderName];
-  const [rows] = await inhouseDb.query(query, params);
+  const [rows] = await db.query(query, params);
   return rows.length > 0 ? rows[0] : null;
 }
 
 // ================== Helper: Get Next Version Number ==================
 async function getNextVersionNumber(fileId) {
-  const [rows] = await inhouseDb.query(
-    'SELECT MAX(version_number) as max_version FROM file_versions WHERE file_id = ?',
+  const [rows] = await db.query(
+    'SELECT MAX(version_number) as max_version FROM file_versions WHERE file_id = $1',
     [fileId]
   );
   const maxVersion = rows[0].max_version;
@@ -103,17 +103,17 @@ async function getNextVersionNumber(fileId) {
 async function snapshotFileAsVersion(file, movedBy, notes = null) {
   try {
     const versionNumber = await getNextVersionNumber(file.id);
-    await inhouseDb.query(
+    await db.query(
       `INSERT INTO file_versions 
        (file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         file.id, versionNumber, file.file_name, file.file_path,
         file.file_size, file.file_type, file.folder_id || null, movedBy,
-        notes || `Version ${versionNumber} — snapshotted before overwrite`
+        notes || `Version ${versionNumber} â€” snapshotted before overwrite`
       ]
     );
-    console.log(`📸 Snapshot saved: ${file.file_name} as version ${versionNumber}`);
+    console.log(`ðŸ“¸ Snapshot saved: ${file.file_name} as version ${versionNumber}`);
     return versionNumber;
   } catch (err) {
     console.error('Error snapshotting file as version:', err);
@@ -127,11 +127,11 @@ async function handleOverwrite(incomingFile, existingFile, targetFolderId, moved
     existingFile, movedBy,
     `Overwritten by "${incomingFile.file_name}" moved from folder ${incomingFile.folder_id || 'root'}`
   );
-  await inhouseDb.query(
-    `UPDATE files SET file_path = ?, file_size = ?, file_type = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`,
+  await db.query(
+    `UPDATE files SET file_path = $1, file_size = $2, file_type = $3, updated_by = $4, updated_at = NOW() WHERE id = $5`,
     [incomingFile.file_path, incomingFile.file_size, incomingFile.file_type, movedBy, existingFile.id]
   );
-  await inhouseDb.query('DELETE FROM files WHERE id = ?', [incomingFile.id]);
+  await db.query('DELETE FROM files WHERE id = $1', [incomingFile.id]);
   await addActivityLog(movedBy, 'OVERWRITE', 'FILE', existingFile.id, existingFile.file_name,
     JSON.stringify({ action: 'overwrite', incoming_file_id: incomingFile.id, previous_version_saved: versionNumber })
   );
@@ -145,7 +145,7 @@ async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy
     const versionNumber = await getNextVersionNumber(existingFile.id);
 
     // Step 2: Generate new versioned file name
-    // e.g. "Testing_Document.pdf" → "Testing_Document (Version 2).pdf"
+    // e.g. "Testing_Document.pdf" â†’ "Testing_Document (Version 2).pdf"
     const ext = path.extname(incomingFile.file_name); // ".pdf"
     const baseName = path.basename(incomingFile.file_name, ext); // "Testing_Document"
     const versionedFileName = `${baseName} (Version ${versionNumber})${ext}`;
@@ -161,16 +161,16 @@ async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy
 
     if (fs.existsSync(oldPhysicalPath)) {
       await fs.promises.rename(oldPhysicalPath, resolvedVersionedPath);
-      console.log(`✅ Renamed physical file to: ${resolvedVersionedPath}`);
+      console.log(`âœ… Renamed physical file to: ${resolvedVersionedPath}`);
     } else {
-      console.warn(`⚠️ Physical file not found: ${oldPhysicalPath}`);
+      console.warn(`âš ï¸ Physical file not found: ${oldPhysicalPath}`);
     }
 
     // Step 4: Update the incoming file row with new name, new path, and target folder
-    await inhouseDb.query(
+    await db.query(
       `UPDATE files 
-       SET file_name = ?, file_path = ?, folder_id = ?, updated_by = ?, updated_at = NOW()
-       WHERE id = ?`,
+       SET file_name = $1, file_path = $2, folder_id = $3, updated_by = $4, updated_at = NOW()
+       WHERE id = $5`,
       [
         versionedFileName,
         fs.existsSync(resolvedVersionedPath) ? versionedFilePath : incomingFile.file_path,
@@ -181,10 +181,10 @@ async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy
     );
 
     // Step 5: Save a record in file_versions linked to the EXISTING file
-    await inhouseDb.query(
+    await db.query(
       `INSERT INTO file_versions 
        (file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         existingFile.id,
         versionNumber,
@@ -194,7 +194,7 @@ async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy
         incomingFile.file_type,
         incomingFile.folder_id || null,
         movedBy,
-        `Version ${versionNumber} — moved from folder ${incomingFile.folder_id || 'root'}`
+        `Version ${versionNumber} â€” moved from folder ${incomingFile.folder_id || 'root'}`
       ]
     );
 
@@ -209,7 +209,7 @@ async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy
       })
     );
 
-    console.log(`✅ Version created: "${versionedFileName}" (version ${versionNumber})`);
+    console.log(`âœ… Version created: "${versionedFileName}" (version ${versionNumber})`);
 
     return {
       strategy: 'version',
@@ -220,7 +220,7 @@ async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy
     };
 
   } catch (err) {
-    console.error('💥 Error in handleVersion:', err);
+    console.error('ðŸ’¥ Error in handleVersion:', err);
     throw err;
   }
 }
@@ -228,10 +228,10 @@ async function handleVersion(incomingFile, existingFile, targetFolderId, movedBy
 // ================== Helper: Record Move History (Phase 5) ==================
 async function recordMoveHistory(batchId, userId, itemType, itemId, itemName, fromFolderId, toFolderId) {
   try {
-    await inhouseDb.query(
+    await db.query(
       `INSERT INTO move_history 
        (batch_id, user_id, item_type, item_id, item_name, from_folder_id, to_folder_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [batchId, userId, itemType, itemId, itemName, fromFolderId || null, toFolderId || null]
     );
   } catch (err) {
@@ -256,7 +256,7 @@ function formatSizeDiff(bytes) {
 // conflict_strategy: 'ask' | 'overwrite' | 'version' | 'skip'
 // =============================================================
 router.post('/single', async (req, res) => {
-  console.log('\n📦 ===== MOVE SINGLE FILE =====');
+  console.log('\nðŸ“¦ ===== MOVE SINGLE FILE =====');
   console.log('Body:', req.body);
 
   const { file_id, target_folder_id, moved_by, conflict_strategy = 'ask' } = req.body;
@@ -269,7 +269,7 @@ router.post('/single', async (req, res) => {
     const userValid = await validateUser(moved_by);
     if (!userValid) return res.status(400).json({ error: 'Invalid moved_by user' });
 
-    const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [file_id]);
+    const [files] = await db.query('SELECT * FROM files WHERE id = $1', [file_id]);
     if (files.length === 0) return res.status(404).json({ error: 'File not found' });
 
     const file = files[0];
@@ -281,14 +281,14 @@ router.post('/single', async (req, res) => {
     }
 
     if (target_folder_id) {
-      const [targetFolder] = await inhouseDb.query('SELECT id, name FROM folders WHERE id = ?', [target_folder_id]);
+      const [targetFolder] = await db.query('SELECT id, name FROM folders WHERE id = $1', [target_folder_id]);
       if (targetFolder.length === 0) return res.status(404).json({ error: 'Target folder not found' });
     }
 
     const conflict = await checkFileConflict(file.file_name, target_folder_id);
 
     if (conflict) {
-      console.log('⚠️ Conflict detected:', file.file_name);
+      console.log('âš ï¸ Conflict detected:', file.file_name);
 
       if (conflict_strategy === 'ask') {
         return res.status(409).json({
@@ -324,11 +324,11 @@ router.post('/single', async (req, res) => {
       }
     }
 
-    // No conflict — normal move
+    // No conflict â€” normal move
     const previousFolderId = file.folder_id;
 
-    await inhouseDb.query(
-      `UPDATE files SET folder_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`,
+    await db.query(
+      `UPDATE files SET folder_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`,
       [target_folder_id || null, moved_by, file_id]
     );
 
@@ -338,7 +338,7 @@ router.post('/single', async (req, res) => {
 
     await recordMoveHistory(batchId, moved_by, 'file', file.id, file.file_name, previousFolderId, target_folder_id);
 
-    console.log(`✅ File "${file.file_name}" moved successfully`);
+    console.log(`âœ… File "${file.file_name}" moved successfully`);
 
     return res.json({
       message: 'File moved successfully', moved: true, batch_id: batchId,
@@ -346,7 +346,7 @@ router.post('/single', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error moving single file:', err);
+    console.error('ðŸ’¥ Error moving single file:', err);
     return res.status(500).json({ error: 'Move failed: ' + err.message });
   }
 });
@@ -357,7 +357,7 @@ router.post('/single', async (req, res) => {
 // Body: { file_ids, folder_ids, target_folder_id, moved_by, conflict_strategy }
 // =============================================================
 router.post('/bulk', async (req, res) => {
-  console.log('\n📦 ===== MOVE BULK =====');
+  console.log('\nðŸ“¦ ===== MOVE BULK =====');
   console.log('Body:', req.body);
 
   const { file_ids = [], folder_ids = [], target_folder_id, moved_by, conflict_strategy = 'ask' } = req.body;
@@ -374,7 +374,7 @@ router.post('/bulk', async (req, res) => {
 
     let targetFolderName = 'root';
     if (target_folder_id) {
-      const [targetFolder] = await inhouseDb.query('SELECT id, name FROM folders WHERE id = ?', [target_folder_id]);
+      const [targetFolder] = await db.query('SELECT id, name FROM folders WHERE id = $1', [target_folder_id]);
       if (targetFolder.length === 0) return res.status(404).json({ error: 'Target folder not found' });
       targetFolderName = targetFolder[0].name;
     }
@@ -383,7 +383,7 @@ router.post('/bulk', async (req, res) => {
     if (conflict_strategy === 'ask') {
       const conflicts = [];
       for (const fileId of file_ids) {
-        const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+        const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
         if (files.length === 0) continue;
         const conflict = await checkFileConflict(files[0].file_name, target_folder_id);
         if (conflict) {
@@ -396,7 +396,7 @@ router.post('/bulk', async (req, res) => {
           message: `${conflicts.length} conflict(s) found at the destination.`,
           conflicts,
           available_strategies: ['overwrite', 'version', 'skip'],
-          hint: 'Resubmit with conflict_strategy set to overwrite, version, or skip — applied to all conflicts'
+          hint: 'Resubmit with conflict_strategy set to overwrite, version, or skip â€” applied to all conflicts'
         });
       }
     }
@@ -406,7 +406,7 @@ router.post('/bulk', async (req, res) => {
     // Move Files
     for (const fileId of file_ids) {
       try {
-        const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+        const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
         if (files.length === 0) { results.errors.push({ id: fileId, reason: 'File not found' }); continue; }
 
         const file = files[0];
@@ -422,7 +422,7 @@ router.post('/bulk', async (req, res) => {
 
         if (conflict) {
           if (conflict_strategy === 'skip') {
-            results.skipped.push({ id: file.id, name: file.file_name, reason: 'Conflict — skipped' });
+            results.skipped.push({ id: file.id, name: file.file_name, reason: 'Conflict â€” skipped' });
             continue;
           }
           if (conflict_strategy === 'overwrite') {
@@ -442,13 +442,13 @@ router.post('/bulk', async (req, res) => {
         }
 
         const previousFolderId = file.folder_id;
-        await inhouseDb.query(`UPDATE files SET folder_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`, [target_folder_id || null, moved_by, fileId]);
-        await addActivityLog(moved_by, 'MOVE', 'FILE', file.id, file.file_name, `Bulk move — from folder ${previousFolderId || 'root'} to ${targetFolderName}`);
+        await db.query(`UPDATE files SET folder_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`, [target_folder_id || null, moved_by, fileId]);
+        await addActivityLog(moved_by, 'MOVE', 'FILE', file.id, file.file_name, `Bulk move â€” from folder ${previousFolderId || 'root'} to ${targetFolderName}`);
         await recordMoveHistory(batchId, moved_by, 'file', file.id, file.file_name, previousFolderId, target_folder_id);
         results.moved_files.push({ id: file.id, name: file.file_name, previous_folder_id: previousFolderId || null, new_folder_id: target_folder_id || null });
 
       } catch (fileErr) {
-        console.error(`💥 Error moving file ${fileId}:`, fileErr);
+        console.error(`ðŸ’¥ Error moving file ${fileId}:`, fileErr);
         results.errors.push({ id: fileId, reason: fileErr.message });
       }
     }
@@ -456,7 +456,7 @@ router.post('/bulk', async (req, res) => {
     // Move Folders
     for (const folderId of folder_ids) {
       try {
-        const [folders] = await inhouseDb.query('SELECT * FROM folders WHERE id = ?', [folderId]);
+        const [folders] = await db.query('SELECT * FROM folders WHERE id = $1', [folderId]);
         if (folders.length === 0) { results.errors.push({ id: folderId, reason: 'Folder not found' }); continue; }
 
         const folder = folders[0];
@@ -473,13 +473,13 @@ router.post('/bulk', async (req, res) => {
         if (conflict) { results.conflicts.push({ id: folderId, name: folder.name, conflicting_folder_id: conflict.id, type: 'folder', strategy_used: conflict_strategy === 'skip' ? 'skipped' : 'needs_decision' }); continue; }
 
         const previousParentId = folder.parent_id;
-        await inhouseDb.query(`UPDATE folders SET parent_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`, [target_folder_id || null, moved_by, folderId]);
-        await addActivityLog(moved_by, 'MOVE', 'FOLDER', folder.id, folder.name, `Bulk move — from parent ${previousParentId || 'root'} to ${targetFolderName}`);
+        await db.query(`UPDATE folders SET parent_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`, [target_folder_id || null, moved_by, folderId]);
+        await addActivityLog(moved_by, 'MOVE', 'FOLDER', folder.id, folder.name, `Bulk move â€” from parent ${previousParentId || 'root'} to ${targetFolderName}`);
         await recordMoveHistory(batchId, moved_by, 'folder', folder.id, folder.name, previousParentId, target_folder_id);
         results.moved_folders.push({ id: folder.id, name: folder.name, previous_parent_id: previousParentId || null, new_parent_id: target_folder_id || null });
 
       } catch (folderErr) {
-        console.error(`💥 Error moving folder ${folderId}:`, folderErr);
+        console.error(`ðŸ’¥ Error moving folder ${folderId}:`, folderErr);
         results.errors.push({ id: folderId, reason: folderErr.message });
       }
     }
@@ -492,7 +492,7 @@ router.post('/bulk', async (req, res) => {
       total_errors: results.errors.length
     };
 
-    console.log('✅ Bulk move completed:', summary);
+    console.log('âœ… Bulk move completed:', summary);
 
     return res.json({
       message: `Bulk move completed: ${summary.total_moved} moved, ${summary.total_conflicts} conflicts, ${summary.total_errors} errors`,
@@ -500,7 +500,7 @@ router.post('/bulk', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error in bulk move:', err);
+    console.error('ðŸ’¥ Error in bulk move:', err);
     return res.status(500).json({ error: 'Bulk move failed: ' + err.message });
   }
 });
@@ -511,7 +511,7 @@ router.post('/bulk', async (req, res) => {
 // Body: { items: [{ id, type }], target_folder_id, moved_by, conflict_strategy }
 // =============================================================
 router.post('/mixed', async (req, res) => {
-  console.log('\n📦 ===== MOVE MIXED SELECTION =====');
+  console.log('\nðŸ“¦ ===== MOVE MIXED SELECTION =====');
   console.log('Body:', req.body);
 
   const { items, target_folder_id, moved_by, conflict_strategy = 'ask' } = req.body;
@@ -534,7 +534,7 @@ router.post('/mixed', async (req, res) => {
 
     let targetFolderName = 'root';
     if (target_folder_id) {
-      const [targetFolder] = await inhouseDb.query('SELECT id, name FROM folders WHERE id = ?', [target_folder_id]);
+      const [targetFolder] = await db.query('SELECT id, name FROM folders WHERE id = $1', [target_folder_id]);
       if (targetFolder.length === 0) return res.status(404).json({ error: 'Target folder not found' });
       targetFolderName = targetFolder[0].name;
     }
@@ -542,13 +542,13 @@ router.post('/mixed', async (req, res) => {
     const file_ids = items.filter(i => i.type === 'file').map(i => i.id);
     const folder_ids = items.filter(i => i.type === 'folder').map(i => i.id);
 
-    console.log(`📊 Mixed selection — Files: ${file_ids.length}, Folders: ${folder_ids.length}`);
+    console.log(`ðŸ“Š Mixed selection â€” Files: ${file_ids.length}, Folders: ${folder_ids.length}`);
 
     // Pre-scan for conflicts if strategy is 'ask'
     if (conflict_strategy === 'ask') {
       const conflicts = [];
       for (const fileId of file_ids) {
-        const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+        const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
         if (files.length === 0) continue;
         const conflict = await checkFileConflict(files[0].file_name, target_folder_id);
         if (conflict) {
@@ -571,7 +571,7 @@ router.post('/mixed', async (req, res) => {
     // Move Files
     for (const fileId of file_ids) {
       try {
-        const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+        const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
         if (files.length === 0) { results.errors.push({ id: fileId, type: 'file', reason: 'File not found' }); continue; }
 
         const file = files[0];
@@ -586,7 +586,7 @@ router.post('/mixed', async (req, res) => {
         const conflict = await checkFileConflict(file.file_name, target_folder_id);
 
         if (conflict) {
-          if (conflict_strategy === 'skip') { results.skipped.push({ id: file.id, name: file.file_name, type: 'file', reason: 'Conflict — skipped' }); continue; }
+          if (conflict_strategy === 'skip') { results.skipped.push({ id: file.id, name: file.file_name, type: 'file', reason: 'Conflict â€” skipped' }); continue; }
           if (conflict_strategy === 'overwrite') {
             const r = await handleOverwrite(file, conflict, target_folder_id, moved_by);
             await recordMoveHistory(batchId, moved_by, 'file', r.file_id, r.file_name, file.folder_id, target_folder_id);
@@ -604,8 +604,8 @@ router.post('/mixed', async (req, res) => {
         }
 
         const previousFolderId = file.folder_id;
-        await inhouseDb.query(`UPDATE files SET folder_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`, [target_folder_id || null, moved_by, fileId]);
-        await addActivityLog(moved_by, 'MOVE', 'FILE', file.id, file.file_name, `Mixed move — from folder ${previousFolderId || 'root'} to ${targetFolderName}`);
+        await db.query(`UPDATE files SET folder_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`, [target_folder_id || null, moved_by, fileId]);
+        await addActivityLog(moved_by, 'MOVE', 'FILE', file.id, file.file_name, `Mixed move â€” from folder ${previousFolderId || 'root'} to ${targetFolderName}`);
         await recordMoveHistory(batchId, moved_by, 'file', file.id, file.file_name, previousFolderId, target_folder_id);
         results.moved_files.push({ id: file.id, name: file.file_name, type: 'file', previous_folder_id: previousFolderId || null, new_folder_id: target_folder_id || null });
 
@@ -617,7 +617,7 @@ router.post('/mixed', async (req, res) => {
     // Move Folders
     for (const folderId of folder_ids) {
       try {
-        const [folders] = await inhouseDb.query('SELECT * FROM folders WHERE id = ?', [folderId]);
+        const [folders] = await db.query('SELECT * FROM folders WHERE id = $1', [folderId]);
         if (folders.length === 0) { results.errors.push({ id: folderId, type: 'folder', reason: 'Folder not found' }); continue; }
 
         const folder = folders[0];
@@ -634,8 +634,8 @@ router.post('/mixed', async (req, res) => {
         if (conflict) { results.conflicts.push({ id: folderId, name: folder.name, type: 'folder', conflicting_id: conflict.id, strategy_used: conflict_strategy === 'skip' ? 'skipped' : 'needs_decision' }); continue; }
 
         const previousParentId = folder.parent_id;
-        await inhouseDb.query(`UPDATE folders SET parent_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`, [target_folder_id || null, moved_by, folderId]);
-        await addActivityLog(moved_by, 'MOVE', 'FOLDER', folder.id, folder.name, `Mixed move — from parent ${previousParentId || 'root'} to ${targetFolderName}`);
+        await db.query(`UPDATE folders SET parent_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`, [target_folder_id || null, moved_by, folderId]);
+        await addActivityLog(moved_by, 'MOVE', 'FOLDER', folder.id, folder.name, `Mixed move â€” from parent ${previousParentId || 'root'} to ${targetFolderName}`);
         await recordMoveHistory(batchId, moved_by, 'folder', folder.id, folder.name, previousParentId, target_folder_id);
         results.moved_folders.push({ id: folder.id, name: folder.name, type: 'folder', previous_parent_id: previousParentId || null, new_parent_id: target_folder_id || null });
 
@@ -654,7 +654,7 @@ router.post('/mixed', async (req, res) => {
       total_errors: results.errors.length
     };
 
-    console.log('✅ Mixed move completed:', summary);
+    console.log('âœ… Mixed move completed:', summary);
 
     return res.json({
       message: `Mixed move completed: ${summary.total_moved} moved, ${summary.total_conflicts} conflicts, ${summary.total_errors} errors`,
@@ -662,7 +662,7 @@ router.post('/mixed', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error in mixed move:', err);
+    console.error('ðŸ’¥ Error in mixed move:', err);
     return res.status(500).json({ error: 'Mixed move failed: ' + err.message });
   }
 });
@@ -673,7 +673,7 @@ router.post('/mixed', async (req, res) => {
 // Body: { folder_id, target_folder_id, moved_by, conflict_strategy }
 // =============================================================
 router.post('/folder', async (req, res) => {
-  console.log('\n📦 ===== MOVE FOLDER WITH CONTENTS =====');
+  console.log('\nðŸ“¦ ===== MOVE FOLDER WITH CONTENTS =====');
   console.log('Body:', req.body);
 
   const { folder_id, target_folder_id, moved_by, conflict_strategy = 'ask' } = req.body;
@@ -686,7 +686,7 @@ router.post('/folder', async (req, res) => {
     const userValid = await validateUser(moved_by);
     if (!userValid) return res.status(400).json({ error: 'Invalid moved_by user' });
 
-    const [folders] = await inhouseDb.query('SELECT * FROM folders WHERE id = ?', [folder_id]);
+    const [folders] = await db.query('SELECT * FROM folders WHERE id = $1', [folder_id]);
     if (folders.length === 0) return res.status(404).json({ error: 'Folder not found' });
 
     const folder = folders[0];
@@ -698,7 +698,7 @@ router.post('/folder', async (req, res) => {
 
     let targetFolderName = 'root';
     if (target_folder_id) {
-      const [targetFolder] = await inhouseDb.query('SELECT id, name FROM folders WHERE id = ?', [target_folder_id]);
+      const [targetFolder] = await db.query('SELECT id, name FROM folders WHERE id = $1', [target_folder_id]);
       if (targetFolder.length === 0) return res.status(404).json({ error: 'Target folder not found' });
       targetFolderName = targetFolder[0].name;
     }
@@ -724,14 +724,14 @@ router.post('/folder', async (req, res) => {
     }
 
     const previousParentId = folder.parent_id;
-    await inhouseDb.query(`UPDATE folders SET parent_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`, [target_folder_id || null, moved_by, folder_id]);
+    await db.query(`UPDATE folders SET parent_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`, [target_folder_id || null, moved_by, folder_id]);
     await addActivityLog(moved_by, 'MOVE', 'FOLDER', folder.id, folder.name, `Moved from parent ${previousParentId || 'root'} to ${targetFolderName} (with contents)`);
     await recordMoveHistory(batchId, moved_by, 'folder', folder.id, folder.name, previousParentId, target_folder_id);
 
-    const [fileCount] = await inhouseDb.query('SELECT COUNT(*) as count FROM files WHERE folder_id = ?', [folder_id]);
-    const [subFolderCount] = await inhouseDb.query('SELECT COUNT(*) as count FROM folders WHERE parent_id = ?', [folder_id]);
+    const [fileCount] = await db.query('SELECT COUNT(*) as count FROM files WHERE folder_id = $1', [folder_id]);
+    const [subFolderCount] = await db.query('SELECT COUNT(*) as count FROM folders WHERE parent_id = $1', [folder_id]);
 
-    console.log(`✅ Folder "${folder.name}" moved successfully`);
+    console.log(`âœ… Folder "${folder.name}" moved successfully`);
 
     return res.json({
       message: `Folder "${folder.name}" moved successfully with all its contents`,
@@ -741,7 +741,7 @@ router.post('/folder', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error moving folder with contents:', err);
+    console.error('ðŸ’¥ Error moving folder with contents:', err);
     return res.status(500).json({ error: 'Folder move failed: ' + err.message });
   }
 });
@@ -752,7 +752,7 @@ router.post('/folder', async (req, res) => {
 // Query: { file_ids, folder_ids, target_folder_id }
 // =============================================================
 router.get('/preview', async (req, res) => {
-  console.log('\n🔍 ===== MOVE PREVIEW =====');
+  console.log('\nðŸ” ===== MOVE PREVIEW =====');
   const { file_ids, folder_ids, target_folder_id } = req.query;
 
   try {
@@ -766,7 +766,7 @@ router.get('/preview', async (req, res) => {
     const preview = { can_move: [], conflicts: [], errors: [], warnings: [] };
 
     for (const fileId of fileIdList) {
-      const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+      const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
       if (files.length === 0) { preview.errors.push({ id: fileId, type: 'file', reason: 'File not found' }); continue; }
       const file = files[0];
       const conflict = await checkFileConflict(file.file_name, target_folder_id);
@@ -778,7 +778,7 @@ router.get('/preview', async (req, res) => {
     }
 
     for (const folderId of folderIdList) {
-      const [folders] = await inhouseDb.query('SELECT * FROM folders WHERE id = ?', [folderId]);
+      const [folders] = await db.query('SELECT * FROM folders WHERE id = $1', [folderId]);
       if (folders.length === 0) { preview.errors.push({ id: folderId, type: 'folder', reason: 'Folder not found' }); continue; }
       const folder = folders[0];
       const isCircular = await checkCircularReference(folderId, target_folder_id);
@@ -805,7 +805,7 @@ router.get('/preview', async (req, res) => {
     return res.json({ message: 'Move preview generated', target_folder_id: target_folder_id || null, preview, summary });
 
   } catch (err) {
-    console.error('💥 Error generating move preview:', err);
+    console.error('ðŸ’¥ Error generating move preview:', err);
     return res.status(500).json({ error: 'Preview failed: ' + err.message });
   }
 });
@@ -815,24 +815,24 @@ router.get('/preview', async (req, res) => {
 // GET /move/versions/:fileId
 // =============================================================
 router.get('/versions/:fileId', async (req, res) => {
-  console.log('\n📋 ===== GET FILE VERSION HISTORY =====');
+  console.log('\nðŸ“‹ ===== GET FILE VERSION HISTORY =====');
   const { fileId } = req.params;
 
   try {
-    const [files] = await inhouseDb.query(
-      `SELECT f.*, fo.name AS folder_name FROM files f LEFT JOIN folders fo ON f.folder_id = fo.id WHERE f.id = ?`,
+    const [files] = await db.query(
+      `SELECT f.*, fo.name AS folder_name FROM files f LEFT JOIN folders fo ON f.folder_id = fo.id WHERE f.id = $1`,
       [fileId]
     );
     if (files.length === 0) return res.status(404).json({ error: 'File not found' });
 
     const currentFile = files[0];
 
-    const [versions] = await inhouseDb.query(
+    const [versions] = await db.query(
       `SELECT fv.*, u.name AS created_by_name, fo.name AS moved_from_folder_name
        FROM file_versions fv
        LEFT JOIN users u ON fv.created_by = u.id
        LEFT JOIN folders fo ON fv.moved_from_folder_id = fo.id
-       WHERE fv.file_id = ?
+       WHERE fv.file_id = $1
        ORDER BY fv.version_number DESC`,
       [fileId]
     );
@@ -852,7 +852,7 @@ router.get('/versions/:fileId', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error getting version history:', err);
+    console.error('ðŸ’¥ Error getting version history:', err);
     return res.status(500).json({ error: 'Failed to get version history: ' + err.message });
   }
 });
@@ -862,7 +862,7 @@ router.get('/versions/:fileId', async (req, res) => {
 // GET /move/versions/:fileId/download/:versionId
 // =============================================================
 router.get('/versions/:fileId/download/:versionId', async (req, res) => {
-  console.log('\n⬇️ ===== DOWNLOAD VERSION =====');
+  console.log('\nâ¬‡ï¸ ===== DOWNLOAD VERSION =====');
   const { fileId, versionId } = req.params;
   const { user_id } = req.query;
 
@@ -872,11 +872,11 @@ router.get('/versions/:fileId/download/:versionId', async (req, res) => {
     const userValid = await validateUser(user_id);
     if (!userValid) return res.status(400).json({ error: 'Invalid user' });
 
-    const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+    const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
     if (files.length === 0) return res.status(404).json({ error: 'File not found' });
     const currentFile = files[0];
 
-    const [versions] = await inhouseDb.query('SELECT * FROM file_versions WHERE id = ? AND file_id = ?', [versionId, fileId]);
+    const [versions] = await db.query('SELECT * FROM file_versions WHERE id = $1 AND file_id = $2', [versionId, fileId]);
     if (versions.length === 0) return res.status(404).json({ error: 'Version not found' });
     const version = versions[0];
 
@@ -906,14 +906,14 @@ router.get('/versions/:fileId/download/:versionId', async (req, res) => {
 
     const downloadName = `${path.parse(currentFile.file_name).name}_v${version.version_number}${path.extname(currentFile.file_name)}`;
 
-    console.log(`✅ Serving version ${version.version_number} as "${downloadName}"`);
+    console.log(`âœ… Serving version ${version.version_number} as "${downloadName}"`);
 
     res.download(filePath, downloadName, (err) => {
-      if (err) { console.error('💥 Error during version download:', err); if (!res.headersSent) res.status(500).json({ error: 'Download failed' }); }
+      if (err) { console.error('ðŸ’¥ Error during version download:', err); if (!res.headersSent) res.status(500).json({ error: 'Download failed' }); }
     });
 
   } catch (err) {
-    console.error('💥 Error downloading version:', err);
+    console.error('ðŸ’¥ Error downloading version:', err);
     return res.status(500).json({ error: 'Version download failed: ' + err.message });
   }
 });
@@ -924,7 +924,7 @@ router.get('/versions/:fileId/download/:versionId', async (req, res) => {
 // Body: { restored_by }
 // =============================================================
 router.post('/versions/:fileId/restore/:versionId', async (req, res) => {
-  console.log('\n🔄 ===== RESTORE VERSION =====');
+  console.log('\nðŸ”„ ===== RESTORE VERSION =====');
   const { fileId, versionId } = req.params;
   const { restored_by } = req.body;
 
@@ -934,11 +934,11 @@ router.post('/versions/:fileId/restore/:versionId', async (req, res) => {
     const userValid = await validateUser(restored_by);
     if (!userValid) return res.status(400).json({ error: 'Invalid restored_by user' });
 
-    const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+    const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
     if (files.length === 0) return res.status(404).json({ error: 'File not found' });
     const currentFile = files[0];
 
-    const [versions] = await inhouseDb.query('SELECT * FROM file_versions WHERE id = ? AND file_id = ?', [versionId, fileId]);
+    const [versions] = await db.query('SELECT * FROM file_versions WHERE id = $1 AND file_id = $2', [versionId, fileId]);
     if (versions.length === 0) return res.status(404).json({ error: 'Version not found' });
     const versionToRestore = versions[0];
 
@@ -959,7 +959,7 @@ router.post('/versions/:fileId/restore/:versionId', async (req, res) => {
     }
 
     if (!versionFileExists) {
-      return res.status(404).json({ error: 'Version file not found on disk — cannot restore', version_id: versionId, stored_path: versionToRestore.file_path });
+      return res.status(404).json({ error: 'Version file not found on disk â€” cannot restore', version_id: versionId, stored_path: versionToRestore.file_path });
     }
 
     // Step 1: Snapshot current file before overwriting
@@ -967,16 +967,16 @@ router.post('/versions/:fileId/restore/:versionId', async (req, res) => {
       `Auto-snapshot before restoring version ${versionToRestore.version_number}`
     );
 
-    console.log(`📸 Current file snapshotted as version ${snapshotVersionNumber} before restore`);
+    console.log(`ðŸ“¸ Current file snapshotted as version ${snapshotVersionNumber} before restore`);
 
-    // Step 2: Update current file with version content — name stays the same (name = identity)
-    await inhouseDb.query(
-      `UPDATE files SET file_path = ?, file_size = ?, file_type = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`,
+    // Step 2: Update current file with version content â€” name stays the same (name = identity)
+    await db.query(
+      `UPDATE files SET file_path = $1, file_size = $2, file_type = $3, updated_by = $4, updated_at = NOW() WHERE id = $5`,
       [versionToRestore.file_path, versionToRestore.file_size, versionToRestore.file_type, restored_by, fileId]
     );
 
-    // Step 3: Remove restored version from file_versions — it is now the live file
-    await inhouseDb.query('DELETE FROM file_versions WHERE id = ?', [versionId]);
+    // Step 3: Remove restored version from file_versions â€” it is now the live file
+    await db.query('DELETE FROM file_versions WHERE id = $1', [versionId]);
 
     await addActivityLog(restored_by, 'RESTORE', 'FILE', currentFile.id, currentFile.file_name,
       JSON.stringify({ action: 'version_restore', restored_version_id: versionId, restored_version_number: versionToRestore.version_number, previous_state_saved_as_version: snapshotVersionNumber })
@@ -989,7 +989,7 @@ router.post('/versions/:fileId/restore/:versionId', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error restoring version:', err);
+    console.error('ðŸ’¥ Error restoring version:', err);
     return res.status(500).json({ error: 'Version restore failed: ' + err.message });
   }
 });
@@ -1000,7 +1000,7 @@ router.post('/versions/:fileId/restore/:versionId', async (req, res) => {
 // Body: { deleted_by }
 // =============================================================
 router.delete('/versions/:fileId/version/:versionId', async (req, res) => {
-  console.log('\n🗑️ ===== DELETE VERSION =====');
+  console.log('\nðŸ—‘ï¸ ===== DELETE VERSION =====');
   const { fileId, versionId } = req.params;
   const { deleted_by } = req.body;
 
@@ -1010,27 +1010,27 @@ router.delete('/versions/:fileId/version/:versionId', async (req, res) => {
     const userValid = await validateUser(deleted_by);
     if (!userValid) return res.status(400).json({ error: 'Invalid deleted_by user' });
 
-    const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [fileId]);
+    const [files] = await db.query('SELECT * FROM files WHERE id = $1', [fileId]);
     if (files.length === 0) return res.status(404).json({ error: 'File not found' });
     const currentFile = files[0];
 
-    const [versions] = await inhouseDb.query('SELECT * FROM file_versions WHERE id = ? AND file_id = ?', [versionId, fileId]);
+    const [versions] = await db.query('SELECT * FROM file_versions WHERE id = $1 AND file_id = $2', [versionId, fileId]);
     if (versions.length === 0) return res.status(404).json({ error: 'Version not found' });
     const version = versions[0];
 
-    const [versionCount] = await inhouseDb.query('SELECT COUNT(*) as count FROM file_versions WHERE file_id = ?', [fileId]);
+    const [versionCount] = await db.query('SELECT COUNT(*) as count FROM file_versions WHERE file_id = $1', [fileId]);
 
     // Delete DB record
-    await inhouseDb.query('DELETE FROM file_versions WHERE id = ?', [versionId]);
-    console.log(`🗑️ Version ${version.version_number} DB record deleted`);
+    await db.query('DELETE FROM file_versions WHERE id = $1', [versionId]);
+    console.log(`ðŸ—‘ï¸ Version ${version.version_number} DB record deleted`);
 
-    // Delete physical file — but ONLY if path differs from current live file
+    // Delete physical file â€” but ONLY if path differs from current live file
     let physicalFileDeleted = false;
     const versionPathNormalized = path.resolve(version.file_path);
     const currentPathNormalized = path.resolve(currentFile.file_path);
 
     if (versionPathNormalized === currentPathNormalized) {
-      console.log('⚠️ Version file path matches current live file — skipping physical delete');
+      console.log('âš ï¸ Version file path matches current live file â€” skipping physical delete');
     } else {
       const pathVariations = [
         version.file_path, path.resolve(version.file_path),
@@ -1041,11 +1041,11 @@ router.delete('/versions/:fileId/version/:versionId', async (req, res) => {
       ];
       for (const testPath of pathVariations) {
         if (fs.existsSync(testPath)) {
-          try { fs.unlinkSync(testPath); physicalFileDeleted = true; console.log(`🗑️ Physical version file deleted: ${testPath}`); } catch (e) { console.error('⚠️ Could not delete physical version file:', e.message); }
+          try { fs.unlinkSync(testPath); physicalFileDeleted = true; console.log(`ðŸ—‘ï¸ Physical version file deleted: ${testPath}`); } catch (e) { console.error('âš ï¸ Could not delete physical version file:', e.message); }
           break;
         }
       }
-      if (!physicalFileDeleted) console.log('⚠️ Physical version file not found on disk — only DB record deleted');
+      if (!physicalFileDeleted) console.log('âš ï¸ Physical version file not found on disk â€” only DB record deleted');
     }
 
     await addActivityLog(deleted_by, 'DELETE', 'FILE', currentFile.id, currentFile.file_name,
@@ -1061,7 +1061,7 @@ router.delete('/versions/:fileId/version/:versionId', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error deleting version:', err);
+    console.error('ðŸ’¥ Error deleting version:', err);
     return res.status(500).json({ error: 'Version delete failed: ' + err.message });
   }
 });
@@ -1072,15 +1072,15 @@ router.delete('/versions/:fileId/version/:versionId', async (req, res) => {
 // Use v1=current or v2=current to compare against the live file
 // =============================================================
 router.get('/versions/:fileId/compare', async (req, res) => {
-  console.log('\n🔍 ===== COMPARE VERSIONS =====');
+  console.log('\nðŸ” ===== COMPARE VERSIONS =====');
   const { fileId } = req.params;
   const { v1, v2 } = req.query;
 
   try {
     if (!v1 || !v2) return res.status(400).json({ error: 'v1 and v2 query params are required. Use version_number values or "current"' });
 
-    const [files] = await inhouseDb.query(
-      `SELECT f.*, u.name AS updated_by_name, fo.name AS folder_name FROM files f LEFT JOIN users u ON f.updated_by = u.id LEFT JOIN folders fo ON f.folder_id = fo.id WHERE f.id = ?`,
+    const [files] = await db.query(
+      `SELECT f.*, u.name AS updated_by_name, fo.name AS folder_name FROM files f LEFT JOIN users u ON f.updated_by = u.id LEFT JOIN folders fo ON f.folder_id = fo.id WHERE f.id = $1`,
       [fileId]
     );
     if (files.length === 0) return res.status(404).json({ error: 'File not found' });
@@ -1090,8 +1090,8 @@ router.get('/versions/:fileId/compare', async (req, res) => {
       if (String(versionRef).toLowerCase() === 'current') {
         return { label: 'Current (live)', version_number: 'current', file_name: currentFile.file_name, file_size: currentFile.file_size, file_type: currentFile.file_type, folder: currentFile.folder_name || 'root', saved_by: currentFile.updated_by_name || 'unknown', saved_at: currentFile.updated_at, notes: 'Live file' };
       }
-      const [rows] = await inhouseDb.query(
-        `SELECT fv.*, u.name AS created_by_name, fo.name AS moved_from_folder_name FROM file_versions fv LEFT JOIN users u ON fv.created_by = u.id LEFT JOIN folders fo ON fv.moved_from_folder_id = fo.id WHERE fv.file_id = ? AND fv.version_number = ?`,
+      const [rows] = await db.query(
+        `SELECT fv.*, u.name AS created_by_name, fo.name AS moved_from_folder_name FROM file_versions fv LEFT JOIN users u ON fv.created_by = u.id LEFT JOIN folders fo ON fv.moved_from_folder_id = fo.id WHERE fv.file_id = $1 AND fv.version_number = $2`,
         [fileId, versionRef]
       );
       if (rows.length === 0) return null;
@@ -1120,7 +1120,7 @@ router.get('/versions/:fileId/compare', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error comparing versions:', err);
+    console.error('ðŸ’¥ Error comparing versions:', err);
     return res.status(500).json({ error: 'Version compare failed: ' + err.message });
   }
 });
@@ -1132,7 +1132,7 @@ router.get('/versions/:fileId/compare', async (req, res) => {
 // Shows whether each batch is still undoable (within 24 hours)
 // =============================================================
 router.get('/history', async (req, res) => {
-  console.log('\n📜 ===== GET MOVE HISTORY =====');
+  console.log('\nðŸ“œ ===== GET MOVE HISTORY =====');
   const { user_id } = req.query;
 
   try {
@@ -1141,14 +1141,14 @@ router.get('/history', async (req, res) => {
     const userValid = await validateUser(user_id);
     if (!userValid) return res.status(400).json({ error: 'Invalid user' });
 
-    const [batches] = await inhouseDb.query(
+    const [batches] = await db.query(
       `SELECT batch_id, MIN(moved_at) as moved_at, COUNT(*) as item_count,
               MAX(undone) as undone, MAX(undone_at) as undone_at
        FROM move_history
-       WHERE user_id = ?
+       WHERE user_id = $1
        GROUP BY batch_id
        ORDER BY moved_at DESC
-       LIMIT ?`,
+       LIMIT $2`,
       [user_id, MOVE_HISTORY_LIMIT]
     );
 
@@ -1160,8 +1160,8 @@ router.get('/history', async (req, res) => {
     const history = [];
 
     for (const batch of batches) {
-      const [items] = await inhouseDb.query(
-        'SELECT * FROM move_history WHERE batch_id = ? ORDER BY id ASC',
+      const [items] = await db.query(
+        'SELECT * FROM move_history WHERE batch_id = $1 ORDER BY id ASC',
         [batch.batch_id]
       );
 
@@ -1176,11 +1176,11 @@ router.get('/history', async (req, res) => {
         let fromFolderName = 'root';
         let toFolderName = 'root';
         if (item.from_folder_id) {
-          const [f] = await inhouseDb.query('SELECT name FROM folders WHERE id = ?', [item.from_folder_id]);
+          const [f] = await db.query('SELECT name FROM folders WHERE id = $1', [item.from_folder_id]);
           if (f.length > 0) fromFolderName = f[0].name;
         }
         if (item.to_folder_id) {
-          const [f] = await inhouseDb.query('SELECT name FROM folders WHERE id = ?', [item.to_folder_id]);
+          const [f] = await db.query('SELECT name FROM folders WHERE id = $1', [item.to_folder_id]);
           if (f.length > 0) toFolderName = f[0].name;
         }
         formattedItems.push({
@@ -1204,7 +1204,7 @@ router.get('/history', async (req, res) => {
     return res.json({ message: 'Move history retrieved', history, total: history.length, undo_window: `${UNDO_EXPIRY_HOURS} hours` });
 
   } catch (err) {
-    console.error('💥 Error getting move history:', err);
+    console.error('ðŸ’¥ Error getting move history:', err);
     return res.status(500).json({ error: 'Failed to get move history: ' + err.message });
   }
 });
@@ -1214,15 +1214,15 @@ router.get('/history', async (req, res) => {
 // GET /move/history/:batchId?user_id=1
 // =============================================================
 router.get('/history/:batchId', async (req, res) => {
-  console.log('\n📜 ===== GET BATCH DETAIL =====');
+  console.log('\nðŸ“œ ===== GET BATCH DETAIL =====');
   const { batchId } = req.params;
   const { user_id } = req.query;
 
   try {
     if (!user_id) return res.status(400).json({ error: 'user_id is required' });
 
-    const [items] = await inhouseDb.query(
-      `SELECT mh.*, u.name AS user_name FROM move_history mh LEFT JOIN users u ON mh.user_id = u.id WHERE mh.batch_id = ? AND mh.user_id = ? ORDER BY mh.id ASC`,
+    const [items] = await db.query(
+      `SELECT mh.*, u.name AS user_name FROM move_history mh LEFT JOIN users u ON mh.user_id = u.id WHERE mh.batch_id = $1 AND mh.user_id = $2 ORDER BY mh.id ASC`,
       [batchId, user_id]
     );
 
@@ -1240,11 +1240,11 @@ router.get('/history/:batchId', async (req, res) => {
       let fromFolderName = 'root';
       let toFolderName = 'root';
       if (item.from_folder_id) {
-        const [f] = await inhouseDb.query('SELECT name FROM folders WHERE id = ?', [item.from_folder_id]);
+        const [f] = await db.query('SELECT name FROM folders WHERE id = $1', [item.from_folder_id]);
         if (f.length > 0) fromFolderName = f[0].name;
       }
       if (item.to_folder_id) {
-        const [f] = await inhouseDb.query('SELECT name FROM folders WHERE id = ?', [item.to_folder_id]);
+        const [f] = await db.query('SELECT name FROM folders WHERE id = $1', [item.to_folder_id]);
         if (f.length > 0) toFolderName = f[0].name;
       }
       formattedItems.push({
@@ -1263,7 +1263,7 @@ router.get('/history/:batchId', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error getting batch detail:', err);
+    console.error('ðŸ’¥ Error getting batch detail:', err);
     return res.status(500).json({ error: 'Failed to get batch detail: ' + err.message });
   }
 });
@@ -1275,7 +1275,7 @@ router.get('/history/:batchId', async (req, res) => {
 // Reverses every item in the batch back to its original location
 // =============================================================
 router.post('/undo/:batchId', async (req, res) => {
-  console.log('\n↩️ ===== UNDO MOVE BATCH =====');
+  console.log('\nâ†©ï¸ ===== UNDO MOVE BATCH =====');
   const { batchId } = req.params;
   const { user_id } = req.body;
 
@@ -1285,8 +1285,8 @@ router.post('/undo/:batchId', async (req, res) => {
     const userValid = await validateUser(user_id);
     if (!userValid) return res.status(400).json({ error: 'Invalid user' });
 
-    const [items] = await inhouseDb.query(
-      'SELECT * FROM move_history WHERE batch_id = ? AND user_id = ? ORDER BY id ASC',
+    const [items] = await db.query(
+      'SELECT * FROM move_history WHERE batch_id = $1 AND user_id = $2 ORDER BY id ASC',
       [batchId, user_id]
     );
 
@@ -1313,30 +1313,30 @@ router.post('/undo/:batchId', async (req, res) => {
 
     const results = { undone: [], failed: [], not_found: [] };
 
-    // Process in reverse order — important for nested folders
+    // Process in reverse order â€” important for nested folders
     const reversedItems = [...items].reverse();
 
     for (const item of reversedItems) {
       try {
         if (item.item_type === 'file') {
-          const [fileCheck] = await inhouseDb.query('SELECT id FROM files WHERE id = ?', [item.item_id]);
+          const [fileCheck] = await db.query('SELECT id FROM files WHERE id = $1', [item.item_id]);
           if (fileCheck.length === 0) {
-            results.not_found.push({ item_type: 'file', item_id: item.item_id, item_name: item.item_name, reason: 'File no longer exists — may have been deleted after the move' });
+            results.not_found.push({ item_type: 'file', item_id: item.item_id, item_name: item.item_name, reason: 'File no longer exists â€” may have been deleted after the move' });
             continue;
           }
-          await inhouseDb.query(`UPDATE files SET folder_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`, [item.from_folder_id || null, user_id, item.item_id]);
+          await db.query(`UPDATE files SET folder_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`, [item.from_folder_id || null, user_id, item.item_id]);
           await addActivityLog(user_id, 'MOVE', 'FILE', item.item_id, item.item_name,
             JSON.stringify({ action: 'undo_move', batch_id: batchId, restored_to_folder: item.from_folder_id || 'root' })
           );
           results.undone.push({ item_type: 'file', item_id: item.item_id, item_name: item.item_name, restored_to_folder_id: item.from_folder_id || null });
 
         } else if (item.item_type === 'folder') {
-          const [folderCheck] = await inhouseDb.query('SELECT id FROM folders WHERE id = ?', [item.item_id]);
+          const [folderCheck] = await db.query('SELECT id FROM folders WHERE id = $1', [item.item_id]);
           if (folderCheck.length === 0) {
-            results.not_found.push({ item_type: 'folder', item_id: item.item_id, item_name: item.item_name, reason: 'Folder no longer exists — may have been deleted after the move' });
+            results.not_found.push({ item_type: 'folder', item_id: item.item_id, item_name: item.item_name, reason: 'Folder no longer exists â€” may have been deleted after the move' });
             continue;
           }
-          await inhouseDb.query(`UPDATE folders SET parent_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`, [item.from_folder_id || null, user_id, item.item_id]);
+          await db.query(`UPDATE folders SET parent_id = $1, updated_by = $2, updated_at = NOW() WHERE id = $3`, [item.from_folder_id || null, user_id, item.item_id]);
           await addActivityLog(user_id, 'MOVE', 'FOLDER', item.item_id, item.item_name,
             JSON.stringify({ action: 'undo_move', batch_id: batchId, restored_to_parent: item.from_folder_id || 'root' })
           );
@@ -1344,13 +1344,13 @@ router.post('/undo/:batchId', async (req, res) => {
         }
 
       } catch (itemErr) {
-        console.error(`💥 Error undoing item ${item.item_id}:`, itemErr);
+        console.error(`ðŸ’¥ Error undoing item ${item.item_id}:`, itemErr);
         results.failed.push({ item_type: item.item_type, item_id: item.item_id, item_name: item.item_name, reason: itemErr.message });
       }
     }
 
     // Mark entire batch as undone
-    await inhouseDb.query(`UPDATE move_history SET undone = 1, undone_at = NOW() WHERE batch_id = ?`, [batchId]);
+    await db.query(`UPDATE move_history SET undone = 1, undone_at = NOW() WHERE batch_id = $1`, [batchId]);
 
     const summary = {
       total_items: items.length,
@@ -1359,7 +1359,7 @@ router.post('/undo/:batchId', async (req, res) => {
       total_failed: results.failed.length
     };
 
-    console.log('✅ Undo completed:', summary);
+    console.log('âœ… Undo completed:', summary);
 
     return res.json({
       message: `Undo completed: ${summary.total_undone} restored, ${summary.total_not_found} not found, ${summary.total_failed} failed`,
@@ -1367,7 +1367,7 @@ router.post('/undo/:batchId', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('💥 Error undoing batch:', err);
+    console.error('ðŸ’¥ Error undoing batch:', err);
     return res.status(500).json({ error: 'Undo failed: ' + err.message });
   }
 });

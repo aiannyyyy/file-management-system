@@ -1,6 +1,27 @@
-//shareController.js
-const inhouseDb = require("../dbInhouse");
+﻿//shareController.js
+const db = require("../config/db");
 const notificationController = require('./notificationController');
+
+async function insertFileSharesIgnoreDuplicates(values) {
+  let inserted = 0;
+
+  for (const row of values) {
+    try {
+      await db.query(
+        `INSERT INTO file_shares (file_id, category_file_id, shared_by, shared_with, created_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        row
+      );
+      inserted++;
+    } catch (err) {
+      if (err.code !== "23505") {
+        throw err;
+      }
+    }
+  }
+
+  return { affectedRows: inserted };
+}
 
 // ================== Helper: Add Activity Log ==================
 async function addActivityLog(userId, action, targetType, targetId, targetName, additionalInfo = null) {
@@ -27,15 +48,15 @@ async function addActivityLog(userId, action, targetType, targetId, targetName, 
     const mappedAction = actionMap[action] || 'CREATE';
     const mappedEntityType = entityTypeMap[targetType] || 'FILE';
 
-    await inhouseDb.query(
+    await db.query(
       `INSERT INTO activity_logs (user_id, action, target_type, target_id, target_name, additional_info, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       [userId, mappedAction, mappedEntityType, targetId, targetName, additionalInfo]
     );
 
-    console.log(`📝 Log: ${mappedAction} ${mappedEntityType} (${targetName}) by user ${userId}`);
+    console.log(`ðŸ“ Log: ${mappedAction} ${mappedEntityType} (${targetName}) by user ${userId}`);
   } catch (error) {
-    console.error("💥 Error adding activity log:", error);
+    console.error("ðŸ’¥ Error adding activity log:", error);
   }
 }
 
@@ -46,58 +67,58 @@ exports.shareFile = async (req, res) => {
     const { userIds } = req.body;
     const sharedBy = req.user.id;
 
-    console.log('🔍 DEBUG: shareFile() called');
-    console.log('📋 Request params:', { fileId, userIds, sharedBy });
+    console.log('ðŸ” DEBUG: shareFile() called');
+    console.log('ðŸ“‹ Request params:', { fileId, userIds, sharedBy });
 
     // Validate input
     if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-      console.warn('⚠️ DEBUG: Invalid userIds input');
+      console.warn('âš ï¸ DEBUG: Invalid userIds input');
       return res.status(400).json({ error: 'Please select at least one user' });
     }
 
     // Check if file exists and user owns it
-    const [files] = await inhouseDb.query(
+    const [files] = await db.query(
       'SELECT created_by, file_name FROM files WHERE id = ?',
       [fileId]
     );
 
-    console.log('🔍 DEBUG: File query result:', files);
+    console.log('ðŸ” DEBUG: File query result:', files);
 
     if (files.length === 0) {
-      console.warn('⚠️ DEBUG: File not found, fileId:', fileId);
+      console.warn('âš ï¸ DEBUG: File not found, fileId:', fileId);
       return res.status(404).json({ error: 'File not found' });
     }
 
     const fileOwnerId = String(files[0].created_by);
     const currentUserId = String(sharedBy);
 
-    console.log('🔐 DEBUG: Ownership Check');
+    console.log('ðŸ” DEBUG: Ownership Check');
     console.log('  - File Owner ID:', fileOwnerId);
     console.log('  - Current User ID:', currentUserId);
     console.log('  - Are Equal?:', fileOwnerId === currentUserId);
 
     if (fileOwnerId !== currentUserId) {
-      console.error('❌ DEBUG: Ownership mismatch! User cannot share this file');
+      console.error('âŒ DEBUG: Ownership mismatch! User cannot share this file');
       return res.status(403).json({ 
         error: 'Only file owner can share this file'
       });
     }
 
-    console.log('✅ DEBUG: Ownership verified');
+    console.log('âœ… DEBUG: Ownership verified');
 
     // Remove self from userIds
     const validUserIds = userIds.filter(id => String(id) !== currentUserId);
 
-    console.log('🔍 DEBUG: After filtering self');
+    console.log('ðŸ” DEBUG: After filtering self');
     console.log('  - Original userIds:', userIds);
     console.log('  - Valid userIds:', validUserIds);
 
     if (validUserIds.length === 0) {
-      console.warn('⚠️ DEBUG: No valid users after filtering');
+      console.warn('âš ï¸ DEBUG: No valid users after filtering');
       return res.status(400).json({ error: 'Cannot share file with yourself' });
     }
 
-    // ✅ FIXED: Prepare values for bulk insert WITH created_at timestamp
+    // âœ… FIXED: Prepare values for bulk insert WITH created_at timestamp
     const now = new Date();
     const values = validUserIds.map(userId => [
       fileId,        // file_id
@@ -107,16 +128,13 @@ exports.shareFile = async (req, res) => {
       now            // created_at - EXPLICITLY SET
     ]);
 
-    console.log('🔍 DEBUG: Prepared insert values with timestamp');
+    console.log('ðŸ” DEBUG: Prepared insert values with timestamp');
     console.log('  - Timestamp:', now);
 
-    // ✅ FIXED: Insert shares with created_at column
-    const [insertResult] = await inhouseDb.query(
-      'INSERT IGNORE INTO file_shares (file_id, category_file_id, shared_by, shared_with, created_at) VALUES ?',
-      [values]
-    );
+    // âœ… FIXED: Insert shares with created_at column
+    const insertResult = await insertFileSharesIgnoreDuplicates(values);
 
-    console.log('✅ DEBUG: Insert result:', insertResult);
+    console.log('âœ… DEBUG: Insert result:', insertResult);
     console.log('  - Affected rows:', insertResult.affectedRows);
 
     // Log the share action
@@ -130,7 +148,7 @@ exports.shareFile = async (req, res) => {
       `Shared with ${validUserIds.length} user(s): ${sharedWithNames}`
     );
 
-    console.log('✅ DEBUG: Activity log created');
+    console.log('âœ… DEBUG: Activity log created');
 
     // Respond immediately
     res.json({
@@ -140,7 +158,7 @@ exports.shareFile = async (req, res) => {
     });
 
     // Create notifications in BULK (async - won't block response)
-    console.log('📬 Creating bulk notifications for', validUserIds.length, 'user(s)');
+    console.log('ðŸ“¬ Creating bulk notifications for', validUserIds.length, 'user(s)');
     notificationController.createShareNotificationsForMany(
       sharedBy,
       validUserIds,
@@ -148,12 +166,12 @@ exports.shareFile = async (req, res) => {
       fileId,
       null
     ).catch(err => {
-      console.error(`⚠️ Bulk notification error:`, err.message);
+      console.error(`âš ï¸ Bulk notification error:`, err.message);
     });
-    console.log(`📤 Notifications queued for ${validUserIds.length} user(s)`);
+    console.log(`ðŸ“¤ Notifications queued for ${validUserIds.length} user(s)`);
 
   } catch (error) {
-    console.error('❌ ERROR: Error sharing file:', error);
+    console.error('âŒ ERROR: Error sharing file:', error);
     res.status(500).json({ 
       error: 'Failed to share file',
       details: error.message
@@ -174,7 +192,7 @@ exports.shareCategoryFile = async (req, res) => {
     }
 
     // Check if file exists and user owns it
-    const [files] = await inhouseDb.query(
+    const [files] = await db.query(
       'SELECT created_by, name, original_name FROM categories_files WHERE id = ?',
       [categoryFileId]
     );
@@ -197,7 +215,7 @@ exports.shareCategoryFile = async (req, res) => {
       return res.status(400).json({ error: 'Cannot share file with yourself' });
     }
 
-    // ✅ FIXED: Prepare values for bulk insert WITH created_at timestamp
+    // âœ… FIXED: Prepare values for bulk insert WITH created_at timestamp
     const now = new Date();
     const values = validUserIds.map(userId => [
       null,              // file_id (NULL for category files)
@@ -207,11 +225,8 @@ exports.shareCategoryFile = async (req, res) => {
       now                // created_at - EXPLICITLY SET
     ]);
 
-    // ✅ FIXED: Insert shares with created_at column
-    const [insertResult] = await inhouseDb.query(
-      'INSERT IGNORE INTO file_shares (file_id, category_file_id, shared_by, shared_with, created_at) VALUES ?',
-      [values]
-    );
+    // âœ… FIXED: Insert shares with created_at column
+    const insertResult = await insertFileSharesIgnoreDuplicates(values);
 
     // Log the share action
     const sharedWithNames = validUserIds.join(', ');
@@ -232,7 +247,7 @@ exports.shareCategoryFile = async (req, res) => {
     });
 
     // Create notifications asynchronously
-    console.log('📬 Creating notifications for', validUserIds.length, 'users');
+    console.log('ðŸ“¬ Creating notifications for', validUserIds.length, 'users');
     notificationController.createShareNotificationsForMany(
       sharedBy,
       validUserIds,
@@ -240,7 +255,7 @@ exports.shareCategoryFile = async (req, res) => {
       null,
       categoryFileId
     ).catch(err => {
-      console.error(`⚠️ Bulk notification error:`, err.message);
+      console.error(`âš ï¸ Bulk notification error:`, err.message);
     });
 
   } catch (error) {
@@ -262,7 +277,7 @@ exports.shareCategory = async (req, res) => {
     }
 
     // Check if category exists
-    const [categories] = await inhouseDb.query(
+    const [categories] = await db.query(
       'SELECT id, name FROM categories WHERE id = ?',
       [categoryId]
     );
@@ -274,7 +289,7 @@ exports.shareCategory = async (req, res) => {
     const category = categories[0];
 
     // Get all files in this category
-    const [files] = await inhouseDb.query(
+    const [files] = await db.query(
       'SELECT id FROM categories_files WHERE category_id = ?',
       [categoryId]
     );
@@ -289,7 +304,7 @@ exports.shareCategory = async (req, res) => {
       return res.status(400).json({ error: 'Cannot share with yourself' });
     }
 
-    // ✅ FIXED: Prepare bulk insert values WITH created_at timestamp
+    // âœ… FIXED: Prepare bulk insert values WITH created_at timestamp
     const now = new Date();
     const values = [];
     for (const fileId of files) {
@@ -304,11 +319,8 @@ exports.shareCategory = async (req, res) => {
       }
     }
 
-    // ✅ FIXED: Insert shares with created_at column
-    const [insertResult] = await inhouseDb.query(
-      'INSERT IGNORE INTO file_shares (file_id, category_file_id, shared_by, shared_with, created_at) VALUES ?',
-      [values]
-    );
+    // âœ… FIXED: Insert shares with created_at column
+    const insertResult = await insertFileSharesIgnoreDuplicates(values);
 
     // Log the category share action
     const sharedWithNames = validUserIds.join(', ');
@@ -331,7 +343,7 @@ exports.shareCategory = async (req, res) => {
     });
 
     // Create notifications asynchronously
-    console.log('📬 Creating category share notifications for', validUserIds.length, 'users');
+    console.log('ðŸ“¬ Creating category share notifications for', validUserIds.length, 'users');
     notificationController.createShareNotificationsForMany(
       sharedBy,
       validUserIds,
@@ -339,7 +351,7 @@ exports.shareCategory = async (req, res) => {
       null,
       null
     ).catch(err => {
-      console.error(`⚠️ Bulk notification error:`, err.message);
+      console.error(`âš ï¸ Bulk notification error:`, err.message);
     });
 
   } catch (error) {
@@ -353,10 +365,10 @@ exports.getSharedWithMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    console.log('📥 Fetching files shared with user:', userId);
+    console.log('ðŸ“¥ Fetching files shared with user:', userId);
 
     // Get regular files shared with user
-    const [regularFiles] = await inhouseDb.query(
+    const [regularFiles] = await db.query(
       `SELECT 
         f.id,
         f.file_name,
@@ -379,10 +391,10 @@ exports.getSharedWithMe = async (req, res) => {
       [userId]
     );
 
-    console.log('✅ Regular files found:', regularFiles.length);
+    console.log('âœ… Regular files found:', regularFiles.length);
 
     // Get category files shared with user
-    const [categoryFiles] = await inhouseDb.query(
+    const [categoryFiles] = await db.query(
       `SELECT 
         cf.id,
         cf.name as file_name,
@@ -406,14 +418,14 @@ exports.getSharedWithMe = async (req, res) => {
       [userId]
     );
 
-    console.log('✅ Category files found:', categoryFiles.length);
+    console.log('âœ… Category files found:', categoryFiles.length);
 
     const allSharedFiles = [...regularFiles, ...categoryFiles];
     allSharedFiles.sort((a, b) => 
       new Date(b.shared_at).getTime() - new Date(a.shared_at).getTime()
     );
 
-    console.log('✅ Total shared files:', allSharedFiles.length);
+    console.log('âœ… Total shared files:', allSharedFiles.length);
 
     res.json({
       success: true,
@@ -422,7 +434,7 @@ exports.getSharedWithMe = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error fetching shared files:', error);
+    console.error('âŒ Error fetching shared files:', error);
     res.status(500).json({ 
       error: 'Failed to fetch shared files',
       details: error.message
@@ -436,7 +448,7 @@ exports.getFileShares = async (req, res) => {
     const { fileId } = req.params;
     const userId = req.user.id;
 
-    const [files] = await inhouseDb.query(
+    const [files] = await db.query(
       'SELECT created_by FROM files WHERE id = ?',
       [fileId]
     );
@@ -449,7 +461,7 @@ exports.getFileShares = async (req, res) => {
       return res.status(403).json({ error: 'Only file owner can view shares' });
     }
 
-    const [shares] = await inhouseDb.query(
+    const [shares] = await db.query(
       `SELECT 
         fs.id,
         fs.shared_with,
@@ -484,7 +496,7 @@ exports.getCategoryFileShares = async (req, res) => {
     const { categoryFileId } = req.params;
     const userId = req.user.id;
 
-    const [files] = await inhouseDb.query(
+    const [files] = await db.query(
       'SELECT created_by FROM categories_files WHERE id = ?',
       [categoryFileId]
     );
@@ -497,7 +509,7 @@ exports.getCategoryFileShares = async (req, res) => {
       return res.status(403).json({ error: 'Only file owner can view shares' });
     }
 
-    const [shares] = await inhouseDb.query(
+    const [shares] = await db.query(
       `SELECT 
         fs.id,
         fs.shared_with,
@@ -532,7 +544,7 @@ exports.removeShare = async (req, res) => {
     const { shareId } = req.params;
     const userId = req.user.id;
 
-    const [shares] = await inhouseDb.query(
+    const [shares] = await db.query(
       `SELECT 
         fs.*,
         COALESCE(f.created_by, cf.created_by) as file_owner,
@@ -557,7 +569,7 @@ exports.removeShare = async (req, res) => {
 
     const share = shares[0];
 
-    await inhouseDb.query('DELETE FROM file_shares WHERE id = ?', [shareId]);
+    await db.query('DELETE FROM file_shares WHERE id = ?', [shareId]);
 
     await addActivityLog(
       userId,
@@ -584,7 +596,7 @@ exports.getAllUsers = async (req, res) => {
   try {
     const currentUserId = req.user.id;
 
-    const [users] = await inhouseDb.query(
+    const [users] = await db.query(
       `SELECT 
         id, 
         user_name, 
@@ -626,7 +638,7 @@ exports.checkFileAccess = async (req, res) => {
       params = [fileId];
     }
 
-    const [files] = await inhouseDb.query(query, params);
+    const [files] = await db.query(query, params);
 
     if (files.length === 0) {
       return res.status(404).json({ error: 'File not found' });
@@ -650,7 +662,7 @@ exports.checkFileAccess = async (req, res) => {
       shareParams = [fileId, userId];
     }
 
-    const [shares] = await inhouseDb.query(shareQuery, shareParams);
+    const [shares] = await db.query(shareQuery, shareParams);
 
     if (shares.length > 0) {
       return res.json({
@@ -677,7 +689,7 @@ exports.getCategoryShares = async (req, res) => {
   try {
     const { categoryId } = req.params;
 
-    const [shares] = await inhouseDb.query(
+    const [shares] = await db.query(
       `SELECT DISTINCT
         fs.id,
         fs.shared_with,
@@ -714,7 +726,7 @@ exports.getSharedCategoriesWithMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const [categories] = await inhouseDb.query(
+    const [categories] = await db.query(
       `SELECT DISTINCT
         c.id,
         c.name,
@@ -754,7 +766,7 @@ exports.removeCategoryShare = async (req, res) => {
     const { categoryId, userId } = req.params;
     const currentUserId = req.user.id;
 
-    const [categories] = await inhouseDb.query(
+    const [categories] = await db.query(
       'SELECT id, name FROM categories WHERE id = ?',
       [categoryId]
     );
@@ -765,10 +777,12 @@ exports.removeCategoryShare = async (req, res) => {
 
     const category = categories[0];
 
-    const [result] = await inhouseDb.query(
-      `DELETE fs FROM file_shares fs
-       INNER JOIN categories_files cf ON fs.category_file_id = cf.id
-       WHERE cf.category_id = ? AND fs.shared_with = ?`,
+    const [result] = await db.query(
+      `DELETE FROM file_shares fs
+       USING categories_files cf
+       WHERE fs.category_file_id = cf.id
+         AND cf.category_id = $1
+         AND fs.shared_with = $2`,
       [categoryId, userId]
     );
 

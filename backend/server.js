@@ -1,4 +1,4 @@
-// ============================================
+﻿// ============================================
 // SOCKET.IO REAL-TIME MESSAGING SETUP
 // File: server.js (INHOUSE DB ONLY)
 // ============================================
@@ -14,7 +14,7 @@ require("dotenv").config();
 // ============================================
 // DATABASE CONNECTION
 // ============================================
-const inhouseDb = require("./dbInhouse");
+const db = require("./config/db");
 
 // ============================================
 // ROUTES
@@ -49,7 +49,7 @@ const uploadsDir = path.join(__dirname, 'uploads');
 
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
-  console.log('📁 Created uploads directory:', uploadsDir);
+  console.log('ðŸ“ Created uploads directory:', uploadsDir);
 }
 
 app.use('/uploads', express.static(uploadsDir, {
@@ -61,34 +61,34 @@ app.use('/uploads', express.static(uploadsDir, {
     if (fileName.endsWith('.pdf')) {
       res.set('Content-Type', 'application/pdf');
       res.set('Content-Disposition', 'inline');
-      console.log(`📄 Serving PDF: ${fileName}`);
+      console.log(`ðŸ“„ Serving PDF: ${fileName}`);
     }
     else if (fileName.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i)) {
       res.set('Content-Disposition', 'inline');
-      console.log(`🖼️ Serving image: ${fileName}`);
+      console.log(`ðŸ–¼ï¸ Serving image: ${fileName}`);
     }
     else if (fileName.match(/\.(mp4|webm|ogg|mov|avi|mkv|flv)$/i)) {
       res.set('Content-Disposition', 'inline');
-      console.log(`🎥 Serving video: ${fileName}`);
+      console.log(`ðŸŽ¥ Serving video: ${fileName}`);
     }
     else if (fileName.match(/\.(mp3|wav|flac|aac|ogg|m4a|wma)$/i)) {
       res.set('Content-Disposition', 'inline');
-      console.log(`🎵 Serving audio: ${fileName}`);
+      console.log(`ðŸŽµ Serving audio: ${fileName}`);
     }
     else if (fileName.match(/\.(txt|csv|json|xml|html|css|js|log)$/i)) {
       res.set('Content-Type', 'text/plain; charset=utf-8');
       res.set('Content-Disposition', 'inline');
-      console.log(`📝 Serving text: ${fileName}`);
+      console.log(`ðŸ“ Serving text: ${fileName}`);
     }
     else {
       res.set('Content-Disposition', 'attachment');
-      console.log(`📦 Serving download: ${fileName}`);
+      console.log(`ðŸ“¦ Serving download: ${fileName}`);
     }
   }
 }));
 
-console.log('📂 Uploads directory serving at /uploads');
-console.log(`📂 Full path: ${uploadsDir}`);
+console.log('ðŸ“‚ Uploads directory serving at /uploads');
+console.log(`ðŸ“‚ Full path: ${uploadsDir}`);
 
 // ============================================
 // API ROUTES
@@ -119,7 +119,7 @@ const activeUsers = new Map();
 const typingUsers = new Map();
 
 io.on('connection', (socket) => {
-  console.log(`✅ New user connected: ${socket.id}`);
+  console.log(`âœ… New user connected: ${socket.id}`);
 
   socket.on('user-join', (userData) => {
     const { userId, userName, email } = userData;
@@ -127,19 +127,19 @@ io.on('connection', (socket) => {
     activeUsers.set(userId, socket.id);
     socket.userId = userId;
 
-    console.log(`👤 User ${userId} (${userName}) joined. Active users: ${activeUsers.size}`);
+    console.log(`ðŸ‘¤ User ${userId} (${userName}) joined. Active users: ${activeUsers.size}`);
 
     // Update user status
     (async () => {
       try {
         const updateStatusQuery = `
-          INSERT INTO user_status (userId, isOnline, lastSeen)
-          VALUES (?, TRUE, CURRENT_TIMESTAMP)
-          ON DUPLICATE KEY UPDATE
-          isOnline = TRUE,
-          lastSeen = CURRENT_TIMESTAMP
+          INSERT INTO user_status ("userId", "isOnline", "lastSeen")
+          VALUES ($1, TRUE, NOW())
+          ON CONFLICT ("userId") DO UPDATE SET
+          "isOnline" = TRUE,
+          "lastSeen" = NOW()
         `;
-        await inhouseDb.query(updateStatusQuery, [userId]);
+        await db.query(updateStatusQuery, [userId]);
       } catch (err) {
         console.error('Error updating user status:', err.message);
       }
@@ -155,16 +155,16 @@ io.on('connection', (socket) => {
 
   socket.on('user-disconnect', (userId) => {
     activeUsers.delete(userId);
-    console.log(`👤 User ${userId} disconnected. Active users: ${activeUsers.size}`);
+    console.log(`ðŸ‘¤ User ${userId} disconnected. Active users: ${activeUsers.size}`);
 
     (async () => {
       try {
         const updateStatusQuery = `
           UPDATE user_status
           SET isOnline = FALSE, lastSeen = CURRENT_TIMESTAMP
-          WHERE userId = ?
+          WHERE "userId" = $1
         `;
-        await inhouseDb.query(updateStatusQuery, [userId]);
+        await db.query(updateStatusQuery, [userId]);
       } catch (err) {
         console.error('Error updating user status:', err.message);
       }
@@ -196,7 +196,7 @@ io.on('connection', (socket) => {
       fileType
     } = messageData;
 
-    console.log(`💬 Message sent in conversation ${conversationId} by user ${senderId}`);
+    console.log(`ðŸ’¬ Message sent in conversation ${conversationId} by user ${senderId}`);
 
     io.emit('receive-message', {
       id: messageId,
@@ -226,7 +226,7 @@ io.on('connection', (socket) => {
   socket.on('message-read', (data) => {
     const { messageId, conversationId, userId } = data;
 
-    console.log(`✅ Message ${messageId} read by user ${userId}`);
+    console.log(`âœ… Message ${messageId} read by user ${userId}`);
 
     io.emit('message-read-update', {
       messageId,
@@ -239,7 +239,7 @@ io.on('connection', (socket) => {
   socket.on('delete-message', (data) => {
     const { messageId, conversationId } = data;
 
-    console.log(`🗑️ Message ${messageId} deleted in conversation ${conversationId}`);
+    console.log(`ðŸ—‘ï¸ Message ${messageId} deleted in conversation ${conversationId}`);
 
     io.emit('message-deleted', {
       messageId,
@@ -261,7 +261,7 @@ io.on('connection', (socket) => {
 
     typingUsers.get(conversationId).add(userId);
 
-    console.log(`⌨️ User ${userId} typing in conversation ${conversationId}`);
+    console.log(`âŒ¨ï¸ User ${userId} typing in conversation ${conversationId}`);
 
     io.emit('user-typing', {
       conversationId,
@@ -278,7 +278,7 @@ io.on('connection', (socket) => {
       typingUsers.get(conversationId).delete(userId);
     }
 
-    console.log(`⌨️ User ${userId} stopped typing in conversation ${conversationId}`);
+    console.log(`âŒ¨ï¸ User ${userId} stopped typing in conversation ${conversationId}`);
 
     io.emit('user-stop-typing', {
       conversationId,
@@ -300,7 +300,7 @@ io.on('connection', (socket) => {
   socket.on('user-status-change', (data) => {
     const { userId, status } = data;
 
-    console.log(`📍 User ${userId} status changed to ${status}`);
+    console.log(`ðŸ“ User ${userId} status changed to ${status}`);
 
     io.emit('user-status-update', {
       userId,
@@ -318,7 +318,7 @@ io.on('connection', (socket) => {
     const roomName = `conversation-${conversationId}`;
     
     socket.join(roomName);
-    console.log(`🔗 User ${userId} joined conversation ${conversationId}`);
+    console.log(`ðŸ”— User ${userId} joined conversation ${conversationId}`);
 
     socket.to(roomName).emit('user-joined-conversation', {
       conversationId,
@@ -332,7 +332,7 @@ io.on('connection', (socket) => {
     const roomName = `conversation-${conversationId}`;
     
     socket.leave(roomName);
-    console.log(`🚪 User ${userId} left conversation ${conversationId}`);
+    console.log(`ðŸšª User ${userId} left conversation ${conversationId}`);
 
     io.to(roomName).emit('user-left-conversation', {
       conversationId,
@@ -354,16 +354,16 @@ io.on('connection', (socket) => {
     
     if (userId) {
       activeUsers.delete(userId);
-      console.log(`❌ User ${userId} disconnected. Active users: ${activeUsers.size}`);
+      console.log(`âŒ User ${userId} disconnected. Active users: ${activeUsers.size}`);
 
       (async () => {
         try {
           const updateStatusQuery = `
             UPDATE user_status
             SET isOnline = FALSE, lastSeen = CURRENT_TIMESTAMP
-            WHERE userId = ?
+            WHERE "userId" = $1
           `;
-          await inhouseDb.query(updateStatusQuery, [userId]);
+          await db.query(updateStatusQuery, [userId]);
         } catch (err) {
           console.error('Error updating user status on disconnect:', err.message);
         }
@@ -387,8 +387,8 @@ io.on('connection', (socket) => {
 // ============================================
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`✅ Server running at http://localhost:${PORT}`);
+  console.log(`âœ… Server running at http://localhost:${PORT}`);
 });
 
 // Export for use in routes
-module.exports = { app, server, io, inhouseDb };
+module.exports = { app, server, io };

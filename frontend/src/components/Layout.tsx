@@ -533,7 +533,7 @@ export default function Layout({ children, userData, onLogout }: LayoutProps) {
 
             <div className="hidden md:block">
               <h1 className="text-xl font-semibold text-gray-900 dark:text-white">
-                NSCSL Intranet File Management System
+                Intranet File Management System
               </h1>
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Secure document collaboration platform

@@ -184,12 +184,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           </button>
         </form>
         
-        {/* Optional: Add development note */}
-        <div className="mt-6 text-center">
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Server: http://localhost:3002
-          </p>
-        </div>
       </div>
     </div>
   );

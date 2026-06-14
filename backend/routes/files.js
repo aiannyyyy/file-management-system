@@ -1,13 +1,13 @@
-//files.js
+﻿//files.js
 const express = require('express');
 const path = require('path');
-const inhouseDb = require("../dbInhouse");
+const db = require("../config/db");
 const fs = require('fs');
 const util = require('util');
 const validator = require('validator');
 const archiver = require('archiver');
 const unlinkAsync = util.promisify(fs.unlink);
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 const qpdf = require('node-qpdf2');
 const passwordManager = require('../utils/passwordManager');
 const wordPasswordManager = require('../utils/wordPasswordManager');
@@ -30,21 +30,21 @@ const router = express.Router();
 
 // ================== Helper: Validate User ==================
 async function validateUser(userId) {
-  console.log("🔍 Validating user ID:", userId, "Type:", typeof userId);
+  console.log("ðŸ” Validating user ID:", userId, "Type:", typeof userId);
   
   try {
-    const [rows] = await inhouseDb.query("SELECT id, name, email FROM users WHERE id = ?", [userId]);
-    console.log("📋 User validation query result:", rows);
+    const { rows: rows } = await db.query("SELECT id, name, email FROM users WHERE id = $1", [userId]);
+    console.log("ðŸ“‹ User validation query result:", rows);
     
     if (rows.length > 0) {
-      console.log("✅ User found:", rows[0]);
+      console.log("âœ… User found:", rows[0]);
       return true;
     } else {
-      console.log("❌ No user found with ID:", userId);
+      console.log("âŒ No user found with ID:", userId);
       return false;
     }
   } catch (error) {
-    console.error("💥 Error validating user:", error);
+    console.error("ðŸ’¥ Error validating user:", error);
     return false;
   }
 }
@@ -52,7 +52,7 @@ async function validateUser(userId) {
 // ================== Helper: Get User Details ==================
 async function getUserDetails(userId) {
   try {
-    const [rows] = await inhouseDb.query("SELECT id, name, user_name, email FROM users WHERE id = ?", [userId]);
+    const { rows: rows } = await db.query("SELECT id, name, user_name, email FROM users WHERE id = $1", [userId]);
     return rows.length > 0 ? rows[0] : null;
   } catch (error) {
     console.error("Error getting user details:", error);
@@ -97,8 +97,8 @@ async function checkFileAccess(fileId, userId, fileType = 'regular') {
         }
 
         // Check if user owns the file
-        const [files] = await inhouseDb.query(
-            `SELECT created_by FROM ${fileTable} WHERE id = ?`,
+        const { rows: files } = await db.query(
+            `SELECT created_by FROM ${fileTable} WHERE id = $1`,
             [fileId]
         );
 
@@ -112,8 +112,8 @@ async function checkFileAccess(fileId, userId, fileType = 'regular') {
         }
 
         // Check if file is shared with user
-        const [shares] = await inhouseDb.query(
-            `SELECT id FROM file_shares WHERE ${shareColumn} = ? AND shared_with = ?`,
+        const { rows: shares } = await db.query(
+            `SELECT id FROM file_shares WHERE ${shareColumn} = $1 AND shared_with = $2`,
             [fileId, userId]
         );
 
@@ -155,7 +155,7 @@ async function addActivityLog(userId, action, targetType, targetId, targetName, 
       'copy': 'COPY'
     };
 
-    // ✅ NEW: Separate categories from folders
+    // âœ… NEW: Separate categories from folders
         const entityTypeMap = {
             'category': 'CATEGORY',    // Categories get their own type
             'folder': 'FOLDER',        // Folders use FOLDER type
@@ -165,37 +165,37 @@ async function addActivityLog(userId, action, targetType, targetId, targetName, 
     const mappedAction = actionMap[action] || 'CREATE';
     const mappedEntityType = entityTypeMap[targetType] || 'FILE';
 
-    await inhouseDb.query(
+    await db.query(
       `INSERT INTO activity_logs (user_id, action, target_type, target_id, target_name, additional_info, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       [userId, mappedAction, mappedEntityType, targetId, targetName, additionalInfo]
     );
     
-    console.log(`📝 Log: ${mappedAction} ${mappedEntityType} (${targetName}) by user ${userId}`);
+    console.log(`ðŸ“ Log: ${mappedAction} ${mappedEntityType} (${targetName}) by user ${userId}`);
   } catch (error) {
-    console.error("💥 Error adding activity log:", error);
+    console.error("ðŸ’¥ Error adding activity log:", error);
   }
 }
 
 // ================== Helper: Execute with Transaction ==================
 async function executeWithTransaction(operations) {
-  const connection = await inhouseDb.getConnection();
+  const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
     
     const results = [];
     for (const operation of operations) {
-      const result = await operation(connection);
+      const result = await operation(client);
       results.push(result);
     }
     
-    await connection.commit();
+    await client.query("COMMIT");
     return results;
   } catch (error) {
-    await connection.rollback();
+    await client.query("ROLLBACK");
     throw error;
   } finally {
-    connection.release();
+    client.release();
   }
 }
 
@@ -203,13 +203,13 @@ async function executeWithTransaction(operations) {
 // ================== Configure Storage ==================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    console.log("📁 Setting upload destination: uploads/");
+    console.log("ðŸ“ Setting upload destination: uploads/");
     cb(null, "uploads/");
   },
   filename: (req, file, cb) => {
     const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
     const filename = Date.now() + "-" + sanitizedName;
-    console.log("📝 Generated filename:", filename);
+    console.log("ðŸ“ Generated filename:", filename);
     cb(null, filename);
   },
 });
@@ -223,14 +223,14 @@ const upload = multer({
     files: MAX_FILES_PER_REQUEST,
   },
   fileFilter: (req, file, cb) => {
-    console.log("🔍 File filter check:", {
+    console.log("ðŸ” File filter check:", {
       originalname: file.originalname,
       mimetype: file.mimetype,
       size: file.size
     });
     
     if (!validateFileType(file.originalname)) {
-      console.log("❌ File type not allowed:", file.originalname);
+      console.log("âŒ File type not allowed:", file.originalname);
       return cb(new Error(`File type not allowed. Allowed types: ${ALLOWED_FILE_TYPES.join(', ')}`), false);
     }
     
@@ -241,13 +241,13 @@ const upload = multer({
 
 // ================== Create Folder ==================
 router.post("/folders", async (req, res) => {
-  console.log("\n🆕 ===== CREATE FOLDER REQUEST =====");
-  console.log("📥 Request body:", req.body);
+  console.log("\nðŸ†• ===== CREATE FOLDER REQUEST =====");
+  console.log("ðŸ“¥ Request body:", req.body);
   
   const { name, parent_id, created_by } = req.body;
   
   // Debug logging
-  console.log("📊 Extracted values:");
+  console.log("ðŸ“Š Extracted values:");
   console.log("  - name:", name, "Type:", typeof name);
   console.log("  - parent_id:", parent_id, "Type:", typeof parent_id);
   console.log("  - created_by:", created_by, "Type:", typeof created_by);
@@ -255,12 +255,12 @@ router.post("/folders", async (req, res) => {
   try {
     // Validate required fields
     if (!name || name.trim() === '') {
-      console.log("❌ Missing or empty folder name");
+      console.log("âŒ Missing or empty folder name");
       return res.status(400).json({ error: "Folder name is required" });
     }
     
     if (!created_by) {
-      console.log("❌ Missing created_by user ID");
+      console.log("âŒ Missing created_by user ID");
       return res.status(400).json({ error: "created_by user ID is required" });
     }
     
@@ -268,74 +268,74 @@ router.post("/folders", async (req, res) => {
     const sanitizedName = sanitizeInput(name);
     
     // Validate user exists
-    console.log("🔍 Validating user...");
+    console.log("ðŸ” Validating user...");
     const userExists = await validateUser(created_by);
     if (!userExists) {
-      console.log("❌ User validation failed for ID:", created_by);
+      console.log("âŒ User validation failed for ID:", created_by);
       return res.status(400).json({ error: "Invalid created_by user" });
     }
     
     // Check if parent folder exists (if provided)
     if (parent_id) {
-      console.log("🔍 Checking parent folder:", parent_id);
-      const [parentCheck] = await inhouseDb.query("SELECT id FROM folders WHERE id = ?", [parent_id]);
+      console.log("ðŸ” Checking parent folder:", parent_id);
+      const { rows: parentCheck } = await db.query("SELECT id FROM folders WHERE id = $1", [parent_id]);
       if (parentCheck.length === 0) {
-        console.log("❌ Parent folder not found:", parent_id);
+        console.log("âŒ Parent folder not found:", parent_id);
         return res.status(400).json({ error: "Parent folder not found" });
       }
-      console.log("✅ Parent folder exists");
+      console.log("âœ… Parent folder exists");
     }
     
     // Check for duplicate folder names in the same parent
     const duplicateCheck = parent_id 
-      ? await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id = ?", [sanitizedName, parent_id])
-      : await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [sanitizedName]);
+      ? await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id = $2", [sanitizedName, parent_id])
+      : await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id IS NULL", [sanitizedName]);
     
-    if (duplicateCheck[0].length > 0) {
-      console.log("❌ Duplicate folder name found");
+    if (duplicateCheck.rows.length > 0) {
+      console.log("âŒ Duplicate folder name found");
       return res.status(400).json({ error: "A folder with this name already exists in the same location" });
     }
     
-    console.log("💾 Inserting folder into database...");
-    const [result] = await inhouseDb.query(
+    console.log("ðŸ’¾ Inserting folder into database...");
+    const { rows: [result] } = await db.query(
       `INSERT INTO folders (name, parent_id, created_by, updated_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, NOW(), NOW())`,
+       VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING id`,
       [sanitizedName, parent_id || null, created_by, created_by]
     );
     
-    console.log("✅ Folder created successfully!");
-    console.log("📋 Insert result:", result);
-    console.log("🆔 New folder ID:", result.insertId);
+    console.log("âœ… Folder created successfully!");
+    console.log("ðŸ“‹ Insert result:", result);
+    console.log("ðŸ†” New folder ID:", result.id);
     
     // Get user details for response
     const userDetails = await getUserDetails(created_by);
     
     res.json({ 
       message: "Folder created successfully",
-      folderId: result.insertId,
+      folderId: result.id,
       folderName: sanitizedName,
       createdBy: userDetails,
       parentId: parent_id || null
     });
     
-    await addActivityLog(created_by, "create", "folder", result.insertId, sanitizedName);
+    await addActivityLog(created_by, "create", "folder", result.id, sanitizedName);
 
   } catch (err) {
-    console.error("💥 Error creating folder:", err);
-    console.error("📋 Error stack:", err.stack);
+    console.error("ðŸ’¥ Error creating folder:", err);
+    console.error("ðŸ“‹ Error stack:", err.stack);
     res.status(500).json({ error: "Failed to create folder: " + err.message });
   }
 });
 
 // ================== Upload File (Single) ==================
 router.post("/upload", uploadSingle('file'), async (req, res) => {
-  console.log("\n📤 ===== FILE UPLOAD REQUEST =====");
-  console.log("📥 Request body:", req.body);
-  console.log("📎 File info:", req.file);
+  console.log("\nðŸ“¤ ===== FILE UPLOAD REQUEST =====");
+  console.log("ðŸ“¥ Request body:", req.body);
+  console.log("ðŸ“Ž File info:", req.file);
   
   const { folder_id, created_by } = req.body;
   
-  console.log("📊 Extracted values:");
+  console.log("ðŸ“Š Extracted values:");
   console.log("  - folder_id:", folder_id, "Type:", typeof folder_id);
   console.log("  - created_by:", created_by, "Type:", typeof created_by);
   
@@ -343,18 +343,18 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
     // Validate file
     const file = req.file;
     if (!file) {
-      console.log("❌ No file uploaded");
+      console.log("âŒ No file uploaded");
       return res.status(400).json({ error: "No file uploaded" });
     }
     
     // Validate file path
     if (!validateFilePath(file.path)) {
-      console.log("❌ Invalid file path:", file.path);
+      console.log("âŒ Invalid file path:", file.path);
       await unlinkAsync(file.path);
       return res.status(400).json({ error: "Invalid file path" });
     }
     
-    console.log("📋 File details:");
+    console.log("ðŸ“‹ File details:");
     console.log("  - Original name:", file.originalname);
     console.log("  - File path:", file.path);
     console.log("  - File size:", file.size);
@@ -362,40 +362,40 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
     
     // Validate created_by
     if (!created_by) {
-      console.log("❌ Missing created_by user ID");
+      console.log("âŒ Missing created_by user ID");
       await unlinkAsync(file.path);
       return res.status(400).json({ error: "created_by user ID is required" });
     }
     
-    console.log("🔍 Validating user...");
+    console.log("ðŸ” Validating user...");
     const userExists = await validateUser(created_by);
     if (!userExists) {
-      console.log("❌ User validation failed for ID:", created_by);
+      console.log("âŒ User validation failed for ID:", created_by);
       await unlinkAsync(file.path);
       return res.status(400).json({ error: "Invalid created_by user" });
     }
     
     // Validate folder exists (if provided)
     if (folder_id) {
-      console.log("🔍 Checking folder:", folder_id);
-      const [folderCheck] = await inhouseDb.query("SELECT id FROM folders WHERE id = ?", [folder_id]);
+      console.log("ðŸ” Checking folder:", folder_id);
+      const { rows: folderCheck } = await db.query("SELECT id FROM folders WHERE id = $1", [folder_id]);
       if (folderCheck.length === 0) {
-        console.log("❌ Folder not found:", folder_id);
+        console.log("âŒ Folder not found:", folder_id);
         await unlinkAsync(file.path);
         return res.status(400).json({ error: "Folder not found" });
       }
-      console.log("✅ Folder exists");
+      console.log("âœ… Folder exists");
     }
     
     // Check for duplicate file names in the same folder
     const duplicateCheck = folder_id 
-      ? await inhouseDb.query("SELECT id, file_name FROM files WHERE file_name = ? AND folder_id = ?", [file.originalname, folder_id])
-      : await inhouseDb.query("SELECT id, file_name FROM files WHERE file_name = ? AND folder_id IS NULL", [file.originalname]);
+      ? await db.query("SELECT id, file_name FROM files WHERE file_name = $1 AND folder_id = $2", [file.originalname, folder_id])
+      : await db.query("SELECT id, file_name FROM files WHERE file_name = $1 AND folder_id IS NULL", [file.originalname]);
 
-    if (duplicateCheck[0].length > 0) {
-      const existingFile = duplicateCheck[0][0];
-      console.log("⚠️ Duplicate file detected — returning conflict");
-      // Don't delete the uploaded file — keep it for user decision
+    if (duplicateCheck.rows.length > 0) {
+      const existingFile = duplicateCheck.rows[0];
+      console.log("âš ï¸ Duplicate file detected â€” returning conflict");
+      // Don't delete the uploaded file â€” keep it for user decision
       return res.status(409).json({
         conflict: true,
         message: `A file named "${file.originalname}" already exists in this location.`,
@@ -414,10 +414,10 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
       });
     }
     
-    console.log("💾 Inserting file into database...");
-    const [result] = await inhouseDb.query(
+    console.log("ðŸ’¾ Inserting file into database...");
+    const { rows: [result] } = await db.query(
       `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) RETURNING id`,
       [
         folder_id || null,
         file.originalname,
@@ -429,16 +429,16 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
       ]
     );
 
-    console.log("✅ File uploaded successfully!");
-    console.log("📋 Insert result:", result);
-    console.log("🆔 New file ID:", result.insertId);
+    console.log("âœ… File uploaded successfully!");
+    console.log("ðŸ“‹ Insert result:", result);
+    console.log("ðŸ†” New file ID:", result.id);
     
     // Get user details for response
     const userDetails = await getUserDetails(created_by);
     
     res.json({ 
       message: "File uploaded successfully",
-      fileId: result.insertId,
+      fileId: result.id,
       fileName: file.originalname,
       fileSize: file.size,
       fileSizeFormatted: formatFileSize(file.size),
@@ -447,19 +447,19 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
       folderId: folder_id || null
     });
 
-    await addActivityLog(created_by, "upload", "file", result.insertId, file.originalname, JSON.stringify({ size: file.size, type: file.mimetype }));
+    await addActivityLog(created_by, "upload", "file", result.id, file.originalname, JSON.stringify({ size: file.size, type: file.mimetype }));
     
   } catch (err) {
-    console.error("💥 Error uploading file:", err);
-    console.error("📋 Error stack:", err.stack);
+    console.error("ðŸ’¥ Error uploading file:", err);
+    console.error("ðŸ“‹ Error stack:", err.stack);
     
     // Clean up uploaded file if database insert failed
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
       try {
         await unlinkAsync(req.file.path);
-        console.log("🧹 Cleaned up uploaded file after error");
+        console.log("ðŸ§¹ Cleaned up uploaded file after error");
       } catch (cleanupError) {
-        console.error("💥 Error cleaning up file:", cleanupError);
+        console.error("ðŸ’¥ Error cleaning up file:", cleanupError);
       }
     }
     
@@ -469,7 +469,7 @@ router.post("/upload", uploadSingle('file'), async (req, res) => {
 
 // ================== Resolve Upload Conflict ==================
 router.post("/upload/resolve", async (req, res) => {
-  console.log("\n⚡ ===== RESOLVE UPLOAD CONFLICT =====");
+  console.log("\nâš¡ ===== RESOLVE UPLOAD CONFLICT =====");
   const { conflict_strategy, temp_path, file_name, file_size, file_type, folder_id, created_by, existing_file_id } = req.body;
 
   try {
@@ -487,15 +487,15 @@ router.post("/upload/resolve", async (req, res) => {
       return res.status(400).json({ error: "Uploaded file no longer exists. Please upload again." });
     }
 
-    // ── SKIP ──────────────────────────────────────────────────
+    // â”€â”€ SKIP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (conflict_strategy === 'skip') {
       await unlinkAsync(temp_path).catch(() => {});
       return res.json({ message: "Upload skipped.", skipped: true });
     }
 
-    // ── OVERWRITE ─────────────────────────────────────────────
+    // â”€â”€ OVERWRITE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (conflict_strategy === 'overwrite') {
-      const [existingRows] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [existing_file_id]);
+      const { rows: existingRows } = await db.query("SELECT * FROM files WHERE id = $1", [existing_file_id]);
       if (existingRows.length === 0) {
         await unlinkAsync(temp_path).catch(() => {});
         return res.status(404).json({ error: "Existing file not found" });
@@ -506,8 +506,8 @@ router.post("/upload/resolve", async (req, res) => {
         await unlinkAsync(existingFile.file_path).catch(() => {});
       }
 
-      await inhouseDb.query(
-        `UPDATE files SET file_path = ?, file_size = ?, file_type = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`,
+      await db.query(
+        `UPDATE files SET file_path = $1, file_size = $2, file_type = $3, updated_by = $4, updated_at = NOW() WHERE id = $5`,
         [temp_path, file_size, file_type, created_by, existing_file_id]
       );
 
@@ -523,17 +523,17 @@ router.post("/upload/resolve", async (req, res) => {
       });
     }
 
-    // ── VERSION ───────────────────────────────────────────────
+    // â”€â”€ VERSION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (conflict_strategy === 'version') {
-      const [existingRows] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [existing_file_id]);
+      const { rows: existingRows } = await db.query("SELECT * FROM files WHERE id = $1", [existing_file_id]);
       if (existingRows.length === 0) {
         await unlinkAsync(temp_path).catch(() => {});
         return res.status(404).json({ error: "Existing file not found" });
       }
       const existingFile = existingRows[0];
 
-      const [versionRows] = await inhouseDb.query(
-        "SELECT MAX(version_number) as max_version FROM file_versions WHERE file_id = ?",
+      const { rows: versionRows } = await db.query(
+        "SELECT MAX(version_number) as max_version FROM file_versions WHERE file_id = $1",
         [existing_file_id]
       );
       const versionNumber = (versionRows[0].max_version || 0) + 1;
@@ -548,31 +548,31 @@ router.post("/upload/resolve", async (req, res) => {
 
       await fs.promises.rename(temp_path, resolvedVersionedPath);
 
-      const [result] = await inhouseDb.query(
-        `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      const { rows: [result] } = await db.query(
+      `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) RETURNING id`,
         [folder_id || null, versionedFileName, versionedFilePath, file_type, file_size, created_by, created_by]
       );
 
-      await inhouseDb.query(
+      await db.query(
         `INSERT INTO file_versions 
          (file_id, version_number, file_name, file_path, file_size, file_type, moved_from_folder_id, created_by, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           existing_file_id, versionNumber, versionedFileName,
           versionedFilePath, file_size, file_type,
           folder_id || null, created_by,
-          `Version ${versionNumber} — uploaded alongside existing file`
+          `Version ${versionNumber} â€” uploaded alongside existing file`
         ]
       );
 
-      await addActivityLog(created_by, "upload", "file", result.insertId, versionedFileName,
+      await addActivityLog(created_by, "upload", "file", result.id, versionedFileName,
         JSON.stringify({ action: 'version_upload', original_file_id: existing_file_id, version_number: versionNumber })
       );
 
       return res.json({
         message: `Saved as "${versionedFileName}" (version ${versionNumber}).`,
-        fileId: result.insertId,
+        fileId: result.id,
         fileName: versionedFileName,
         strategy: 'version',
         versionNumber
@@ -582,7 +582,7 @@ router.post("/upload/resolve", async (req, res) => {
     return res.status(400).json({ error: `Unknown conflict_strategy: ${conflict_strategy}` });
 
   } catch (err) {
-    console.error("💥 Error resolving upload conflict:", err);
+    console.error("ðŸ’¥ Error resolving upload conflict:", err);
     await unlinkAsync(temp_path).catch(() => {});
     return res.status(500).json({ error: "Failed to resolve conflict: " + err.message });
   }
@@ -590,9 +590,9 @@ router.post("/upload/resolve", async (req, res) => {
 
 // ================== Upload Multiple Files ==================
 router.post("/upload/multiple", uploadMultiple('files'), async (req, res) => {
-  console.log("\n📤 ===== MULTIPLE FILE UPLOAD REQUEST =====");
-  console.log("📥 Request body:", req.body);
-  console.log("📎 Files count:", req.files?.length || 0);
+  console.log("\nðŸ“¤ ===== MULTIPLE FILE UPLOAD REQUEST =====");
+  console.log("ðŸ“¥ Request body:", req.body);
+  console.log("Files count:", req.files?.length || 0);
   
   const { folder_id, created_by } = req.body;
   const uploadedFiles = [];
@@ -617,7 +617,7 @@ router.post("/upload/multiple", uploadMultiple('files'), async (req, res) => {
     
     // Validate folder (if provided)
     if (folder_id) {
-      const [folderCheck] = await inhouseDb.query("SELECT id FROM folders WHERE id = ?", [folder_id]);
+      const { rows: folderCheck } = await db.query("SELECT id FROM folders WHERE id = $1", [folder_id]);
       if (folderCheck.length === 0) {
         // Clean up all uploaded files
         for (const file of req.files) {
@@ -633,20 +633,20 @@ router.post("/upload/multiple", uploadMultiple('files'), async (req, res) => {
     for (const file of req.files) {
       try {
         // Check for duplicates
-        const duplicateCheck = folder_id 
-          ? await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id = ?", [file.originalname, folder_id])
-          : await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id IS NULL", [file.originalname]);
+        const { rows: duplicateCheckRows } = folder_id 
+          ? await db.query("SELECT id FROM files WHERE file_name = $1 AND folder_id = $2", [file.originalname, folder_id])
+          : await db.query("SELECT id FROM files WHERE file_name = $1 AND folder_id IS NULL", [file.originalname]);
         
-        if (duplicateCheck[0].length > 0) {
+        if (duplicateCheck.rows.length > 0) {
           errors.push({ fileName: file.originalname, error: "File already exists" });
           await unlinkAsync(file.path);
           continue;
         }
         
         // Insert file
-        const [result] = await inhouseDb.query(
-          `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        const { rows: [result] } = await db.query(
+      `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) RETURNING id`,
           [
             folder_id || null,
             file.originalname,
@@ -659,17 +659,17 @@ router.post("/upload/multiple", uploadMultiple('files'), async (req, res) => {
         );
         
         uploadedFiles.push({
-          fileId: result.insertId,
+          fileId: result.id,
           fileName: file.originalname,
           fileSize: file.size,
           fileSizeFormatted: formatFileSize(file.size),
           fileType: path.extname(file.originalname).substring(1).toLowerCase(),
         });
         
-        await addActivityLog(created_by, "upload", "file", result.insertId, file.originalname);
+        await addActivityLog(created_by, "upload", "file", result.id, file.originalname);
         
       } catch (fileError) {
-        console.error("💥 Error processing file:", file.originalname, fileError);
+        console.error("ðŸ’¥ Error processing file:", file.originalname, fileError);
         errors.push({ fileName: file.originalname, error: fileError.message });
         if (fs.existsSync(file.path)) {
           await unlinkAsync(file.path);
@@ -686,7 +686,7 @@ router.post("/upload/multiple", uploadMultiple('files'), async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error in multiple upload:", err);
+    console.error("ðŸ’¥ Error in multiple upload:", err);
     
     // Clean up all uploaded files
     if (req.files) {
@@ -695,7 +695,7 @@ router.post("/upload/multiple", uploadMultiple('files'), async (req, res) => {
           try {
             await unlinkAsync(file.path);
           } catch (cleanupError) {
-            console.error("💥 Error cleaning up file:", cleanupError);
+            console.error("ðŸ’¥ Error cleaning up file:", cleanupError);
           }
         }
       }
@@ -707,11 +707,11 @@ router.post("/upload/multiple", uploadMultiple('files'), async (req, res) => {
 
 // ================== Get Files (Root & Subfolders) ==================
 router.get("/list", async (req, res) => {
-  console.log("\n📂 ===== GET ROOT FILES/FOLDERS =====");
+  console.log("\nðŸ“‚ ===== GET ROOT FILES/FOLDERS =====");
   
   try {
-    console.log("🔍 Querying root files...");
-    const [files] = await inhouseDb.query(
+    console.log("ðŸ” Querying root files...");
+    const { rows: files } = await db.query(
       `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name
        FROM files f
        LEFT JOIN users u ON f.created_by = u.id
@@ -720,8 +720,8 @@ router.get("/list", async (req, res) => {
        ORDER BY f.file_name ASC`
     );
     
-    console.log("🔍 Querying root folders...");
-    const [folders] = await inhouseDb.query(
+    console.log("ðŸ” Querying root folders...");
+    const { rows: folders } = await db.query(
       `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name
        FROM folders f
        LEFT JOIN users u ON f.created_by = u.id
@@ -730,7 +730,7 @@ router.get("/list", async (req, res) => {
        ORDER BY f.name ASC`
     );
     
-    console.log("📊 Query results:");
+    console.log("ðŸ“Š Query results:");
     console.log("  - Files found:", files.length);
     console.log("  - Folders found:", folders.length);
     
@@ -741,7 +741,7 @@ router.get("/list", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error getting root files/folders:", err);
+    console.error("ðŸ’¥ Error getting root files/folders:", err);
     res.status(500).json({ error: "Failed to get files/folders: " + err.message });
   }
 });
@@ -749,44 +749,44 @@ router.get("/list", async (req, res) => {
 router.get("/list/:folderId", async (req, res) => {
   const { folderId } = req.params;
   
-  console.log("\n📂 ===== GET FOLDER CONTENTS =====");
-  console.log("📁 Folder ID:", folderId);
+  console.log("\nðŸ“‚ ===== GET FOLDER CONTENTS =====");
+  console.log("ðŸ“ Folder ID:", folderId);
   
   try {
     // Validate folder exists
-    console.log("🔍 Checking if folder exists...");
-    const [folderCheck] = await inhouseDb.query("SELECT * FROM folders WHERE id = ?", [folderId]);
+    console.log("ðŸ” Checking if folder exists...");
+    const { rows: folderCheck } = await db.query("SELECT * FROM folders WHERE id = $1", [folderId]);
     if (folderCheck.length === 0) {
-      console.log("❌ Folder not found:", folderId);
+      console.log("âŒ Folder not found:", folderId);
       return res.status(404).json({ error: "Folder not found" });
     }
     
     const folderInfo = folderCheck[0];
-    console.log("✅ Folder found:", folderInfo.name);
+    console.log("âœ… Folder found:", folderInfo.name);
     
-    console.log("🔍 Querying files in folder...");
-    const [files] = await inhouseDb.query(
+    console.log("ðŸ” Querying files in folder...");
+    const { rows: files } = await db.query(
       `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name
        FROM files f
        LEFT JOIN users u ON f.created_by = u.id
        LEFT JOIN users u2 ON f.updated_by = u2.id
-       WHERE folder_id = ?
+       WHERE folder_id = $1
        ORDER BY f.file_name ASC`,
       [folderId]
     );
     
-    console.log("🔍 Querying subfolders...");
-    const [folders] = await inhouseDb.query(
+    console.log("ðŸ” Querying subfolders...");
+    const { rows: folders } = await db.query(
       `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name
        FROM folders f
        LEFT JOIN users u ON f.created_by = u.id
        LEFT JOIN users u2 ON f.updated_by = u2.id
-       WHERE parent_id = ?
+       WHERE parent_id = $1
        ORDER BY f.name ASC`,
       [folderId]
     );
     
-    console.log("📊 Query results:");
+    console.log("ðŸ“Š Query results:");
     console.log("  - Files found:", files.length);
     console.log("  - Subfolders found:", folders.length);
     
@@ -798,7 +798,7 @@ router.get("/list/:folderId", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error getting folder contents:", err);
+    console.error("ðŸ’¥ Error getting folder contents:", err);
     res.status(500).json({ error: "Failed to get folder contents: " + err.message });
   }
 });
@@ -807,16 +807,16 @@ router.get("/list/:folderId", async (req, res) => {
 router.get("/path/:folderId", async (req, res) => {
   const { folderId } = req.params;
   
-  console.log("\n🧭 ===== GET FOLDER PATH =====");
-  console.log("📁 Folder ID:", folderId);
+  console.log("\nðŸ§­ ===== GET FOLDER PATH =====");
+  console.log("ðŸ“ Folder ID:", folderId);
   
   try {
     const path = [];
     let currentId = folderId;
     
     while (currentId) {
-      const [folderResult] = await inhouseDb .query(
-        "SELECT id, name, parent_id FROM folders WHERE id = ?",
+      const { rows: folderResult } = await db.query(
+        "SELECT id, name, parent_id FROM folders WHERE id = $1",
         [currentId]
       );
       
@@ -827,11 +827,11 @@ router.get("/path/:folderId", async (req, res) => {
       currentId = folder.parent_id;
     }
     
-    console.log("🧭 Folder path:", path);
+    console.log("ðŸ§­ Folder path:", path);
     res.json({ path });
     
   } catch (err) {
-    console.error("💥 Error getting folder path:", err);
+    console.error("ðŸ’¥ Error getting folder path:", err);
     res.status(500).json({ error: "Failed to get folder path: " + err.message });
   }
 });
@@ -841,9 +841,9 @@ router.get("/diagnostic/:id", async (req, res) => {
   const { id } = req.params;
   
   try {
-    console.log("🔍 DIAGNOSTIC: Checking file ID:", id);
+    console.log("ðŸ” DIAGNOSTIC: Checking file ID:", id);
     
-    const [result] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [id]);
+    const { rows: result } = await db.query("SELECT * FROM files WHERE id = $1", [id]);
     
     if (result.length === 0) {
       return res.json({ 
@@ -919,25 +919,25 @@ router.get("/download/:id", async (req, res) => {
   const { id } = req.params;
   const { user_id } = req.query;
   
-  console.log("\n⬇️ ===== DOWNLOAD FILE =====");
-  console.log("📎 File ID:", id);
-  console.log("👤 User ID:", user_id);
+  console.log("\nâ¬‡ï¸ ===== DOWNLOAD FILE =====");
+  console.log("ðŸ“Ž File ID:", id);
+  console.log("ðŸ‘¤ User ID:", user_id);
   
   try {
     if (!user_id) {
       return res.status(400).json({ error: "user_id is required" });
     }
 
-    console.log("🔍 Querying file details...");
-    const [result] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [id]);
+    console.log("ðŸ” Querying file details...");
+    const { rows: result } = await db.query("SELECT * FROM files WHERE id = $1", [id]);
     
     if (result.length === 0) {
-      console.log("❌ File not found in database:", id);
+      console.log("âŒ File not found in database:", id);
       return res.status(404).json({ error: "File not found in database" });
     }
 
     const file = result[0];
-    console.log("📋 File details from database:", {
+    console.log("ðŸ“‹ File details from database:", {
       id: file.id,
       name: file.file_name,
       stored_path: file.file_path,
@@ -945,7 +945,7 @@ router.get("/download/:id", async (req, res) => {
       type: file.file_type
     });
     
-    // ✅ Try multiple path variations to find the file
+    // âœ… Try multiple path variations to find the file
     let actualFilePath = file.file_path;
     let fileExists = false;
     
@@ -958,23 +958,23 @@ router.get("/download/:id", async (req, res) => {
       path.join(__dirname, '../uploads', path.basename(file.file_path))
     ];
     
-    console.log("🔍 Searching for file in multiple locations...");
+    console.log("ðŸ” Searching for file in multiple locations...");
     
     for (const testPath of pathVariations) {
       console.log(`  - Testing: ${testPath}`);
       if (fs.existsSync(testPath)) {
         actualFilePath = testPath;
         fileExists = true;
-        console.log(`  ✅ FOUND at: ${testPath}`);
+        console.log(`  âœ… FOUND at: ${testPath}`);
         break;
       } else {
-        console.log(`  ❌ Not found`);
+        console.log(`  âŒ Not found`);
       }
     }
     
-    // ✅ FALLBACK: Search by filename pattern if not found
+    // âœ… FALLBACK: Search by filename pattern if not found
     if (!fileExists) {
-      console.log("⚠️  File not found at stored path, searching by filename pattern...");
+      console.log("âš ï¸  File not found at stored path, searching by filename pattern...");
       
       const uploadsDir = path.join(process.cwd(), 'uploads');
       const originalFileName = file.file_name;
@@ -992,13 +992,13 @@ router.get("/download/:id", async (req, res) => {
         for (const filename of files) {
           if (searchPattern.test(filename)) {
             const foundPath = path.join(uploadsDir, filename);
-            console.log(`  ✅ FOUND MATCH: ${filename}`);
+            console.log(`  âœ… FOUND MATCH: ${filename}`);
             actualFilePath = foundPath;
             fileExists = true;
             
             const correctPath = path.join('uploads', filename);
-            await inhouseDb.query("UPDATE files SET file_path = ? WHERE id = ?", [correctPath, id]);
-            console.log(`  📝 Updated database with correct path: ${correctPath}`);
+            await db.query("UPDATE files SET file_path = $1 WHERE id = $2", [correctPath, id]);
+            console.log(`  ðŸ“ Updated database with correct path: ${correctPath}`);
             
             break;
           }
@@ -1007,7 +1007,7 @@ router.get("/download/:id", async (req, res) => {
     }
     
     if (!fileExists) {
-      console.log("❌ File not found in any location!");
+      console.log("âŒ File not found in any location!");
       return res.status(404).json({ 
         error: "File missing on server",
         debug: {
@@ -1018,12 +1018,12 @@ router.get("/download/:id", async (req, res) => {
       });
     }
 
-    console.log("✅ File found at:", actualFilePath);
+    console.log("âœ… File found at:", actualFilePath);
 
     // Validate file path (basic security check)
     const resolvedPath = path.resolve(actualFilePath);
     if (!resolvedPath.includes('uploads')) {
-      console.log("❌ Security check failed - file not in uploads directory");
+      console.log("âŒ Security check failed - file not in uploads directory");
       return res.status(403).json({ error: "Invalid file location" });
     }
 
@@ -1034,18 +1034,18 @@ router.get("/download/:id", async (req, res) => {
     // PROTECTION LOGIC: PDF, DOCX, XLSX
     // ============================================================
     const fileType = file.file_type ? file.file_type.toLowerCase() : '';
-    const needsProtection = ['pdf', 'docx', 'doc', 'xlsx', 'xls'].includes(fileType);
+    const needsProtection = false; // Disabled for demo - requires qpdf installation
 
     if (needsProtection) {
-      console.log(`🔒 ===== ${fileType.toUpperCase()} PROTECTION PROCESS =====`);
-      console.log('📋 Original file:', actualFilePath);
+      console.log(`ðŸ”’ ===== ${fileType.toUpperCase()} PROTECTION PROCESS =====`);
+      console.log('ðŸ“‹ Original file:', actualFilePath);
       
       try {
         // Create temp directory if not exists
         const tempDir = path.join(__dirname, '../temp');
         if (!fs.existsSync(tempDir)) {
           fs.mkdirSync(tempDir, { recursive: true });
-          console.log('📁 Created temp directory:', tempDir);
+          console.log('ðŸ“ Created temp directory:', tempDir);
         }
 
         const timestamp = Date.now();
@@ -1060,7 +1060,7 @@ router.get("/download/:id", async (req, res) => {
 
         // ==================== PDF PROTECTION ====================
         if (fileType === 'pdf') {
-          console.log('🔒 Applying PDF Protection...');
+          console.log('ðŸ”’ Applying PDF Protection...');
           
           ownerPassword = 'nscsl';
           passwordManager = require('../utils/passwordManager');
@@ -1072,7 +1072,7 @@ router.get("/download/:id", async (req, res) => {
             ownerPassword,
             user_id || file.created_by
           );
-          console.log('💾 PDF Password saved to JSON storage');
+          console.log('ðŸ’¾ PDF Password saved to JSON storage');
 
           // Try native qpdf command first
           const { execSync } = require('child_process');
@@ -1081,7 +1081,7 @@ router.get("/download/:id", async (req, res) => {
           
           const qpdfCommand = `qpdf --encrypt "" "${ownerPassword}" 256 --print=full --modify=none --extract=n --annotate=n --form=n --assemble=n -- "${inputFile}" "${outputFile}"`;
           
-          console.log('📋 Attempting native qpdf command...');
+          console.log('ðŸ“‹ Attempting native qpdf command...');
           
           try {
             execSync(qpdfCommand, { 
@@ -1093,12 +1093,12 @@ router.get("/download/:id", async (req, res) => {
             });
             
             if (fs.existsSync(securedFilePath)) {
-              console.log('✅ PDF protection SUCCESS (native qpdf)');
+              console.log('âœ… PDF protection SUCCESS (native qpdf)');
               protectionSuccess = true;
               encryptionMethod = 'native-qpdf';
             }
           } catch (execError) {
-            console.error('❌ Native qpdf failed, trying node-qpdf2...');
+            console.error('âŒ Native qpdf failed, trying node-qpdf2...');
             
             try {
               const qpdf = require('node-qpdf2');
@@ -1119,19 +1119,19 @@ router.get("/download/:id", async (req, res) => {
               });
               
               if (fs.existsSync(securedFilePath)) {
-                console.log('✅ PDF protection SUCCESS (node-qpdf2)');
+                console.log('âœ… PDF protection SUCCESS (node-qpdf2)');
                 protectionSuccess = true;
                 encryptionMethod = 'node-qpdf2';
               }
             } catch (qpdf2Error) {
-              console.error('❌ Both PDF encryption methods failed');
+              console.error('âŒ Both PDF encryption methods failed');
             }
           }
         }
 
         // ==================== WORD PROTECTION ====================
         else if (fileType === 'docx' || fileType === 'doc') {
-          console.log('🔒 Applying Word Protection...');
+          console.log('ðŸ”’ Applying Word Protection...');
           
           passwordManager = wordPasswordManager;
           ownerPassword = passwordManager.generateFixedPassword(file.id);
@@ -1152,19 +1152,19 @@ router.get("/download/:id", async (req, res) => {
                 user_id || file.created_by
               );
               
-              console.log('✅ Word protection SUCCESS');
-              console.log('💾 Word password saved to JSON storage');
+              console.log('âœ… Word protection SUCCESS');
+              console.log('ðŸ’¾ Word password saved to JSON storage');
               protectionSuccess = true;
               encryptionMethod = 'officecrypto-tool';
             }
           } catch (wordError) {
-            console.error('❌ Word encryption failed:', wordError.message);
+            console.error('âŒ Word encryption failed:', wordError.message);
           }
         }
 
         // ==================== EXCEL PROTECTION ====================
         else if (fileType === 'xlsx' || fileType === 'xls') {
-          console.log('🔒 Applying Excel Protection...');
+          console.log('ðŸ”’ Applying Excel Protection...');
           
           passwordManager = excelPasswordManager;
           ownerPassword = passwordManager.generateFixedPassword(file.id);
@@ -1185,13 +1185,13 @@ router.get("/download/:id", async (req, res) => {
                 user_id || file.created_by
               );
               
-              console.log('✅ Excel protection SUCCESS');
-              console.log('💾 Excel password saved to JSON storage');
+              console.log('âœ… Excel protection SUCCESS');
+              console.log('ðŸ’¾ Excel password saved to JSON storage');
               protectionSuccess = true;
               encryptionMethod = 'officecrypto-tool';
             }
           } catch (excelError) {
-            console.error('❌ Excel encryption failed:', excelError.message);
+            console.error('âŒ Excel encryption failed:', excelError.message);
           }
         }
 
@@ -1202,7 +1202,7 @@ router.get("/download/:id", async (req, res) => {
 
         // Verify the output file
         const securedSize = fs.statSync(securedFilePath).size;
-        console.log('📊 Secured file size:', securedSize, 'bytes');
+        console.log('ðŸ“Š Secured file size:', securedSize, 'bytes');
         
         if (securedSize < 1000) {
           throw new Error(`Secured file is suspiciously small (${securedSize} bytes)`);
@@ -1228,7 +1228,7 @@ router.get("/download/:id", async (req, res) => {
         res.setHeader('X-File-Protection', 'password-protected');
         res.setHeader('X-Encryption-Method', encryptionMethod);
 
-        console.log(`📤 Sending secured ${fileType.toUpperCase()} to client...`);
+        console.log(`ðŸ“¤ Sending secured ${fileType.toUpperCase()} to client...`);
         console.log('   Buffer size:', securedBuffer.length, 'bytes');
         console.log('   Encryption method:', encryptionMethod);
         
@@ -1240,22 +1240,22 @@ router.get("/download/:id", async (req, res) => {
           try {
             if (fs.existsSync(securedFilePath)) {
               fs.unlinkSync(securedFilePath);
-              console.log('🧹 Temp secured file cleaned up');
+              console.log('ðŸ§¹ Temp secured file cleaned up');
             }
           } catch (cleanupError) {
-            console.error('⚠️  Failed to cleanup temp file:', cleanupError.message);
+            console.error('âš ï¸  Failed to cleanup temp file:', cleanupError.message);
           }
         }, 10000);
 
-        console.log(`✅ ===== ${fileType.toUpperCase()} PROTECTION COMPLETED =====`);
+        console.log(`âœ… ===== ${fileType.toUpperCase()} PROTECTION COMPLETED =====`);
 
       } catch (protectionError) {
-        console.error(`\n❌ ===== ${fileType.toUpperCase()} PROTECTION FAILED =====`);
+        console.error(`\nâŒ ===== ${fileType.toUpperCase()} PROTECTION FAILED =====`);
         console.error('Error:', protectionError.message);
         console.error('Stack:', protectionError.stack);
         
         // CRITICAL: Send error instead of unprotected file
-        console.error('🚫 REFUSING to send unprotected file');
+        console.error('ðŸš« REFUSING to send unprotected file');
         
         return res.status(500).json({ 
           error: `${fileType.toUpperCase()} protection failed - download aborted`,
@@ -1273,23 +1273,23 @@ router.get("/download/:id", async (req, res) => {
     } else {
       // ==================== NON-PROTECTED FILES ====================
       // For non-protected file types, serve normally
-      console.log("✅ Non-protected file type, starting normal download...");
+      console.log("âœ… Non-protected file type, starting normal download...");
       
       res.download(actualFilePath, file.file_name, (err) => {
         if (err) {
-          console.error("💥 Error during download:", err);
+          console.error("ðŸ’¥ Error during download:", err);
           if (!res.headersSent) {
             res.status(500).json({ error: "Download failed" });
           }
         } else {
-          console.log("✅ Download completed successfully");
+          console.log("âœ… Download completed successfully");
         }
       });
     }
     
   } catch (err) {
-    console.error("💥 Error downloading file:", err);
-    console.error("📋 Error stack:", err.stack);
+    console.error("ðŸ’¥ Error downloading file:", err);
+    console.error("ðŸ“‹ Error stack:", err.stack);
     if (!res.headersSent) {
       res.status(500).json({ error: "Download failed: " + err.message });
     }
@@ -1301,23 +1301,23 @@ router.get("/download/:id", async (req, res) => {
 router.get("/download/folder/:id", async (req, res) => {
   const { id } = req.params;
   
-  console.log("\n📁 ===== DOWNLOAD FOLDER =====");
-  console.log("📁 Folder ID:", id);
+  console.log("\nðŸ“ ===== DOWNLOAD FOLDER =====");
+  console.log("ðŸ“ Folder ID:", id);
   
   try {
     const archiver = require('archiver');
     const path = require('path');
     
     // Get folder details
-    const [folderResult] = await inhouseDb.query("SELECT * FROM folders WHERE id = ?", [id]);
+    const { rows: folderResult } = await db.query("SELECT * FROM folders WHERE id = $1", [id]);
     
     if (folderResult.length === 0) {
-      console.log("❌ Folder not found:", id);
+      console.log("âŒ Folder not found:", id);
       return res.status(404).json({ error: "Folder not found" });
     }
 
     const folder = folderResult[0];
-    console.log("📋 Folder details:", folder.name);
+    console.log("ðŸ“‹ Folder details:", folder.name);
     
     // Get all files in this folder (recursively)
     const files = await getAllFilesInFolder(id);
@@ -1337,7 +1337,7 @@ router.get("/download/folder/:id", async (req, res) => {
 
     // Handle archive errors
     archive.on('error', (err) => {
-      console.error("💥 Archive error:", err);
+      console.error("ðŸ’¥ Archive error:", err);
       if (!res.headersSent) {
         res.status(500).json({ error: "Archive creation failed" });
       }
@@ -1356,10 +1356,10 @@ router.get("/download/folder/:id", async (req, res) => {
     // Finalize the archive
     await archive.finalize();
     
-    console.log("✅ Folder ZIP created successfully");
+    console.log("âœ… Folder ZIP created successfully");
     
   } catch (err) {
-    console.error("💥 Error creating folder ZIP:", err);
+    console.error("ðŸ’¥ Error creating folder ZIP:", err);
     if (!res.headersSent) {
       res.status(500).json({ error: "Folder download failed: " + err.message });
     }
@@ -1370,8 +1370,8 @@ router.get("/download/folder/:id", async (req, res) => {
 router.post("/download/bulk", async (req, res) => {
   const { itemIds } = req.body;
   
-  console.log("\n📦 ===== BULK DOWNLOAD =====");
-  console.log("📦 Items:", itemIds);
+  console.log("\nðŸ“¦ ===== BULK DOWNLOAD =====");
+  console.log("ðŸ“¦ Items:", itemIds);
   
   try {
     const archiver = require('archiver');
@@ -1387,7 +1387,7 @@ router.post("/download/bulk", async (req, res) => {
     const archive = archiver('zip', { zlib: { level: 9 } });
     
     archive.on('error', (err) => {
-      console.error("💥 Archive error:", err);
+      console.error("ðŸ’¥ Archive error:", err);
       if (!res.headersSent) {
         res.status(500).json({ error: "Archive creation failed" });
       }
@@ -1398,7 +1398,7 @@ router.post("/download/bulk", async (req, res) => {
     // Process each item
     for (const itemId of itemIds) {
       // Check if it's a file
-      const [fileResult] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [itemId]);
+      const { rows: fileResult } = await db.query("SELECT * FROM files WHERE id = $1", [itemId]);
       if (fileResult.length > 0) {
         const file = fileResult[0];
         if (fs.existsSync(file.file_path)) {
@@ -1406,7 +1406,7 @@ router.post("/download/bulk", async (req, res) => {
         }
       } else {
         // Check if it's a folder
-        const [folderResult] = await inhouseDb.query("SELECT * FROM folders WHERE id = ?", [itemId]);
+        const { rows: folderResult } = await db.query("SELECT * FROM folders WHERE id = $1", [itemId]);
         if (folderResult.length > 0) {
           const folderFiles = await getAllFilesInFolder(itemId);
           const folder = folderResult[0];
@@ -1421,10 +1421,10 @@ router.post("/download/bulk", async (req, res) => {
     }
 
     await archive.finalize();
-    console.log("✅ Bulk download ZIP created successfully");
+    console.log("âœ… Bulk download ZIP created successfully");
     
   } catch (err) {
-    console.error("💥 Error creating bulk ZIP:", err);
+    console.error("ðŸ’¥ Error creating bulk ZIP:", err);
     if (!res.headersSent) {
       res.status(500).json({ error: "Bulk download failed: " + err.message });
     }
@@ -1436,15 +1436,15 @@ async function getAllFilesInFolder(folderId) {
   const files = [];
   
   // Get direct files in folder
-  const [directFiles] = await inhouseDb.query(
-    "SELECT * FROM files WHERE folder_id = ?", 
+  const { rows: directFiles } = await db.query(
+    "SELECT * FROM files WHERE folder_id = $1", 
     [folderId]
   );
   files.push(...directFiles);
   
   // Get subfolders
-  const [subFolders] = await inhouseDb.query(
-    "SELECT * FROM folders WHERE parent_id = ?", 
+  const { rows: subFolders } = await db.query(
+    "SELECT * FROM folders WHERE parent_id = $1", 
     [folderId]
   );
   
@@ -1463,24 +1463,24 @@ router.get('/preview/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    console.log('📖 Preview request for file ID:', id);
+    console.log('ðŸ“– Preview request for file ID:', id);
     
     // Validate file ID
     if (!id || !validator.isNumeric(id.toString())) {
-      console.log('❌ Invalid file ID:', id);
+      console.log('âŒ Invalid file ID:', id);
       return res.status(400).json({ error: 'Invalid file ID' });
     }
     
     // Get file from database
-    const [files] = await inhouseDb.query('SELECT * FROM files WHERE id = ?', [id]);
+    const { rows: files } = await db.query('SELECT * FROM files WHERE id = $1', [id]);
     
     if (!files || files.length === 0) {
-      console.log('❌ File not found in database:', id);
+      console.log('âŒ File not found in database:', id);
       return res.status(404).json({ error: 'File not found in database' });
     }
     
     const fileRecord = files[0];
-    console.log('📋 File record:', {
+    console.log('ðŸ“‹ File record:', {
       id: fileRecord.id,
       name: fileRecord.file_name,
       stored_path: fileRecord.file_path,
@@ -1499,11 +1499,11 @@ router.get('/preview/:id', async (req, res) => {
       filePath = path.resolve(fileRecord.file_path);
     }
     
-    console.log('🔍 Checking file at path:', filePath);
+    console.log('ðŸ” Checking file at path:', filePath);
     
     // Check if file exists
     if (!fs.existsSync(filePath)) {
-      console.log('❌ File not found on disk at:', filePath);
+      console.log('âŒ File not found on disk at:', filePath);
       
       // Try alternative path constructions
       const alternativePaths = [
@@ -1515,7 +1515,7 @@ router.get('/preview/:id', async (req, res) => {
       
       let foundPath = null;
       for (const altPath of alternativePaths) {
-        console.log('🔍 Trying alternative path:', altPath);
+        console.log('ðŸ” Trying alternative path:', altPath);
         if (fs.existsSync(altPath)) {
           foundPath = altPath;
           break;
@@ -1523,7 +1523,7 @@ router.get('/preview/:id', async (req, res) => {
       }
       
       if (!foundPath) {
-        console.log('❌ File not found in any expected location');
+        console.log('âŒ File not found in any expected location');
         return res.status(404).json({ 
           error: 'File not found on disk',
           debug: {
@@ -1535,7 +1535,7 @@ router.get('/preview/:id', async (req, res) => {
       }
       
       filePath = foundPath;
-      console.log('✅ Found file at alternative path:', filePath);
+      console.log('âœ… Found file at alternative path:', filePath);
     }
     
     // Basic path traversal security check
@@ -1543,7 +1543,7 @@ router.get('/preview/:id', async (req, res) => {
     const uploadsDir = path.resolve(process.cwd(), 'uploads');
     
     if (!resolvedPath.startsWith(uploadsDir) && !resolvedPath.includes('uploads')) {
-      console.log('❌ Security check failed - file outside uploads directory');
+      console.log('âŒ Security check failed - file outside uploads directory');
       return res.status(403).json({ error: 'Access denied - invalid file location' });
     }
     
@@ -1551,7 +1551,7 @@ router.get('/preview/:id', async (req, res) => {
     const stats = fs.statSync(filePath);
     const fileSize = stats.size;
     
-    console.log('📊 File stats:', {
+    console.log('ðŸ“Š File stats:', {
       size: fileSize,
       modified: stats.mtime,
       isFile: stats.isFile()
@@ -1609,7 +1609,7 @@ router.get('/preview/:id', async (req, res) => {
     
     contentType = mimeTypes[ext] || contentType;
     
-    console.log('📄 Content type determined:', contentType, 'for extension:', ext);
+    console.log('ðŸ“„ Content type determined:', contentType, 'for extension:', ext);
     
     // Set response headers
     res.setHeader('Content-Type', contentType);
@@ -1625,7 +1625,7 @@ router.get('/preview/:id', async (req, res) => {
     // Handle range requests for video/audio files
     const range = req.headers.range;
     if (range && (contentType.startsWith('video/') || contentType.startsWith('audio/'))) {
-      console.log('📹 Handling range request:', range);
+      console.log('ðŸ“¹ Handling range request:', range);
       
       const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
@@ -1645,26 +1645,26 @@ router.get('/preview/:id', async (req, res) => {
     const fileStream = fs.createReadStream(filePath);
     
     fileStream.on('error', (error) => {
-      console.error('💥 File stream error:', error);
+      console.error('ðŸ’¥ File stream error:', error);
       if (!res.headersSent) {
         res.status(500).json({ error: 'Error reading file: ' + error.message });
       }
     });
     
     fileStream.on('open', () => {
-      console.log('✅ File stream opened successfully');
+      console.log('âœ… File stream opened successfully');
     });
     
     fileStream.on('end', () => {
-      console.log('✅ File preview completed');
+      console.log('âœ… File preview completed');
     });
     
     // Pipe the file to response
     fileStream.pipe(res);
     
   } catch (error) {
-    console.error('💥 Preview error:', error);
-    console.error('📋 Error stack:', error.stack);
+    console.error('ðŸ’¥ Preview error:', error);
+    console.error('ðŸ“‹ Error stack:', error.stack);
     
     if (!res.headersSent) {
       res.status(500).json({ 
@@ -1680,11 +1680,11 @@ router.patch("/:id", async (req, res) => {
   const { id } = req.params;
   const { new_name, new_folder_id, updated_by } = req.body;
   
-  console.log("\n✏️ ===== RENAME/MOVE REQUEST =====");
-  console.log("🆔 Item ID:", id);
-  console.log("📝 New name:", new_name);
-  console.log("📁 New folder ID:", new_folder_id);
-  console.log("👤 Updated by:", updated_by);
+  console.log("\nâœï¸ ===== RENAME/MOVE REQUEST =====");
+  console.log("ðŸ†” Item ID:", id);
+  console.log("ðŸ“ New name:", new_name);
+  console.log("ðŸ“ New folder ID:", new_folder_id);
+  console.log("ðŸ‘¤ Updated by:", updated_by);
   
   try {
     // Validate updated_by user
@@ -1698,7 +1698,7 @@ router.patch("/:id", async (req, res) => {
     }
     
     // Check if it's a file
-    const [fileResult] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [id]);
+    const { rows: fileResult } = await db.query("SELECT * FROM files WHERE id = $1", [id]);
     
     if (fileResult.length > 0) {
       const file = fileResult[0];
@@ -1707,7 +1707,7 @@ router.patch("/:id", async (req, res) => {
       
       // Validate new folder if provided
       if (targetFolderId) {
-        const [folderCheck] = await inhouseDb.query("SELECT id FROM folders WHERE id = ?", [targetFolderId]);
+        const { rows: folderCheck } = await db.query("SELECT id FROM folders WHERE id = $1", [targetFolderId]);
         if (folderCheck.length === 0) {
           return res.status(400).json({ error: "Target folder not found" });
         }
@@ -1715,16 +1715,16 @@ router.patch("/:id", async (req, res) => {
       
       // Check for duplicates in target location
       const duplicateCheck = targetFolderId 
-        ? await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id = ? AND id != ?", [sanitizedName, targetFolderId, id])
-        : await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id IS NULL AND id != ?", [sanitizedName, id]);
+        ? await db.query("SELECT id FROM files WHERE file_name = $1 AND folder_id = $2 AND id != $3", [sanitizedName, targetFolderId, id])
+        : await db.query("SELECT id FROM files WHERE file_name = $1 AND folder_id IS NULL AND id != $2", [sanitizedName, id]);
       
-      if (duplicateCheck[0].length > 0) {
+      if (duplicateCheck.rows.length > 0) {
         return res.status(400).json({ error: "A file with this name already exists in the target location" });
       }
       
       // Update file
-      await inhouseDb.query(
-        "UPDATE files SET file_name = ?, folder_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?",
+      await db.query(
+        "UPDATE files SET file_name = $1, folder_id = $2, updated_by = $3, updated_at = NOW() WHERE id = $4",
         [sanitizedName, targetFolderId, updated_by, id]
       );
       
@@ -1745,7 +1745,7 @@ router.patch("/:id", async (req, res) => {
     }
     
     // Check if it's a folder
-    const [folderResult] = await inhouseDb.query("SELECT * FROM folders WHERE id = ?", [id]);
+    const { rows: folderResult } = await db.query("SELECT * FROM folders WHERE id = $1", [id]);
     
     if (folderResult.length > 0) {
       const folder = folderResult[0];
@@ -1754,7 +1754,7 @@ router.patch("/:id", async (req, res) => {
       
       // Validate new parent folder if provided
       if (targetParentId) {
-        const [parentCheck] = await inhouseDb.query("SELECT id FROM folders WHERE id = ?", [targetParentId]);
+        const { rows: parentCheck } = await db.query("SELECT id FROM folders WHERE id = $1", [targetParentId]);
         if (parentCheck.length === 0) {
           return res.status(400).json({ error: "Target parent folder not found" });
         }
@@ -1768,16 +1768,16 @@ router.patch("/:id", async (req, res) => {
       
       // Check for duplicates in target location
       const duplicateCheck = targetParentId 
-        ? await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id = ? AND id != ?", [sanitizedName, targetParentId, id])
-        : await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL AND id != ?", [sanitizedName, id]);
+        ? await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id = $2 AND id != $3", [sanitizedName, targetParentId, id])
+        : await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id IS NULL AND id != $2", [sanitizedName, id]);
       
-      if (duplicateCheck[0].length > 0) {
+      if (duplicateCheck.rows.length > 0) {
         return res.status(400).json({ error: "A folder with this name already exists in the target location" });
       }
       
       // Update folder
-      await inhouseDb.query(
-        "UPDATE folders SET name = ?, parent_id = ?, updated_by = ?, updated_at = NOW() WHERE id = ?",
+      await db.query(
+        "UPDATE folders SET name = $1, parent_id = $2, updated_by = $3, updated_at = NOW() WHERE id = $4",
         [sanitizedName, targetParentId, updated_by, id]
       );
       
@@ -1800,7 +1800,7 @@ router.patch("/:id", async (req, res) => {
     return res.status(404).json({ error: "Item not found" });
     
   } catch (err) {
-    console.error("💥 Error updating item:", err);
+    console.error("ðŸ’¥ Error updating item:", err);
     res.status(500).json({ error: "Update failed: " + err.message });
   }
 });
@@ -1814,7 +1814,7 @@ async function checkCircularReference(folderId, targetParentId) {
       return true; // Circular reference found
     }
     
-    const [result] = await inhouseDb.query("SELECT parent_id FROM folders WHERE id = ?", [currentId]);
+    const { rows: result } = await db.query("SELECT parent_id FROM folders WHERE id = $1", [currentId]);
     if (result.length === 0) break;
     
     currentId = result[0].parent_id;
@@ -1828,46 +1828,46 @@ router.delete("/:id", async (req, res) => {
   const { id } = req.params;
   const { updated_by, force } = req.body;
   
-  console.log("\n🗑️ ===== DELETE REQUEST =====");
-  console.log("🆔 Item ID:", id);
-  console.log("👤 Updated by:", updated_by);
-  console.log("💪 Force delete:", force);
+  console.log("\nðŸ—‘ï¸ ===== DELETE REQUEST =====");
+  console.log("ðŸ†” Item ID:", id);
+  console.log("ðŸ‘¤ Updated by:", updated_by);
+  console.log("ðŸ’ª Force delete:", force);
   
   try {
     // Validate updated_by user
     if (!updated_by) {
-      console.log("❌ Missing updated_by user ID");
+      console.log("âŒ Missing updated_by user ID");
       return res.status(400).json({ error: "updated_by user ID is required" });
     }
     
-    console.log("🔍 Validating user...");
+    console.log("ðŸ” Validating user...");
     const userExists = await validateUser(updated_by);
     if (!userExists) {
-      console.log("❌ User validation failed for ID:", updated_by);
+      console.log("âŒ User validation failed for ID:", updated_by);
       return res.status(400).json({ error: "Invalid updated_by user" });
     }
 
     // --- Check if it's a file ---
-    console.log("🔍 Checking if item is a file...");
-    const [fileResult] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [id]);
+    console.log("ðŸ” Checking if item is a file...");
+    const { rows: fileResult } = await db.query("SELECT * FROM files WHERE id = $1", [id]);
     
     if (fileResult.length > 0) {
-      console.log("📎 Found file to delete:", fileResult[0].file_name);
+      console.log("ðŸ“Ž Found file to delete:", fileResult[0].file_name);
       const file = fileResult[0];
       
       // Delete physical file
       if (file.file_path && fs.existsSync(file.file_path)) {
-        console.log("🗑️ Deleting physical file:", file.file_path);
+        console.log("ðŸ—‘ï¸ Deleting physical file:", file.file_path);
         await unlinkAsync(file.file_path);
-        console.log("✅ Physical file deleted");
+        console.log("âœ… Physical file deleted");
       } else {
-        console.log("⚠️ Physical file not found on disk:", file.file_path);
+        console.log("âš ï¸ Physical file not found on disk:", file.file_path);
       }
       
       // Delete database record
-      console.log("🗑️ Deleting file from database...");
-      await inhouseDb.query("DELETE FROM files WHERE id = ?", [id]);
-      console.log("✅ File deleted from database");
+      console.log("ðŸ—‘ï¸ Deleting file from database...");
+      await db.query("DELETE FROM files WHERE id = $1", [id]);
+      console.log("âœ… File deleted from database");
       
       await addActivityLog(updated_by, "delete", "file", file.id, file.file_name);
       
@@ -1882,16 +1882,16 @@ router.delete("/:id", async (req, res) => {
     }
 
     // --- Check if it's a folder ---
-    console.log("🔍 Checking if item is a folder...");
-    const [folderResult] = await inhouseDb.query("SELECT * FROM folders WHERE id = ?", [id]);
+    console.log("ðŸ” Checking if item is a folder...");
+    const { rows: folderResult } = await db.query("SELECT * FROM folders WHERE id = $1", [id]);
     
     if (folderResult.length > 0) {
-      console.log("📁 Found folder to delete:", folderResult[0].name);
+      console.log("ðŸ“ Found folder to delete:", folderResult[0].name);
       const folder = folderResult[0];
       
       if (force) {
         // Force delete: recursively delete all contents
-        console.log("💪 Force deleting folder with all contents...");
+        console.log("ðŸ’ª Force deleting folder with all contents...");
         const deletedItems = await recursivelyDeleteFolder(id, updated_by);
         
         return res.json({
@@ -1905,15 +1905,15 @@ router.delete("/:id", async (req, res) => {
         });
       } else {
         // Regular delete: check if folder is empty
-        const [containedFiles] = await inhouseDb.query("SELECT id, file_name FROM files WHERE folder_id = ?", [id]);
-        const [containedFolders] = await inhouseDb.query("SELECT id, name FROM folders WHERE parent_id = ?", [id]);
+        const { rows: containedFiles } = await db.query("SELECT id, file_name FROM files WHERE folder_id = $1", [id]);
+        const { rows: containedFolders } = await db.query("SELECT id, name FROM folders WHERE parent_id = $1", [id]);
 
-        console.log("📊 Folder contents:");
+        console.log("ðŸ“Š Folder contents:");
         console.log("  - Files:", containedFiles.length);
         console.log("  - Subfolders:", containedFolders.length);
 
         if (containedFiles.length > 0 || containedFolders.length > 0) {
-          console.log("❌ Cannot delete non-empty folder");
+          console.log("âŒ Cannot delete non-empty folder");
           return res.status(400).json({ 
             error: "Cannot delete non-empty folder. Use force=true to delete with contents, or delete contents first.",
             containedFiles: containedFiles.map(f => f.file_name),
@@ -1921,9 +1921,9 @@ router.delete("/:id", async (req, res) => {
           });
         }
 
-        console.log("🗑️ Deleting empty folder from database...");
-        await inhouseDb.query("DELETE FROM folders WHERE id = ?", [id]);
-        console.log("✅ Folder deleted from database");
+        console.log("ðŸ—‘ï¸ Deleting empty folder from database...");
+        await db.query("DELETE FROM folders WHERE id = $1", [id]);
+        console.log("âœ… Folder deleted from database");
         
         // Log the folder deletion AFTER getting the folder info but BEFORE deletion
         await addActivityLog(updated_by, "delete", "folder", folder.id, folder.name);
@@ -1939,12 +1939,12 @@ router.delete("/:id", async (req, res) => {
       }
     }
 
-    console.log("❌ Item not found (neither file nor folder)");
+    console.log("âŒ Item not found (neither file nor folder)");
     return res.status(404).json({ error: "Item not found" });
     
   } catch (err) {
-    console.error("💥 Error during deletion:", err);
-    console.error("📋 Error stack:", err.stack);
+    console.error("ðŸ’¥ Error during deletion:", err);
+    console.error("ðŸ“‹ Error stack:", err.stack);
     res.status(500).json({ error: "Delete failed: " + err.message });
   }
 });
@@ -1955,11 +1955,11 @@ async function recursivelyDeleteFolder(folderId, deletedBy) {
   
   try {
     // FIRST: Get the folder info BEFORE deleting it
-    const [folderInfo] = await inhouseDb.query("SELECT name FROM folders WHERE id = ?", [folderId]);
+    const { rows: folderInfo } = await db.query("SELECT name FROM folders WHERE id = $1", [folderId]);
     const folderName = folderInfo.length > 0 ? folderInfo[0].name : `Folder ${folderId}`;
     
     // Get all files in this folder
-    const [files] = await inhouseDb.query("SELECT * FROM files WHERE folder_id = ?", [folderId]);
+    const { rows: files } = await db.query("SELECT * FROM files WHERE folder_id = $1", [folderId]);
     
     // Delete all files
     for (const file of files) {
@@ -1969,14 +1969,14 @@ async function recursivelyDeleteFolder(folderId, deletedBy) {
       }
       
       // Delete from database
-      await inhouseDb.query("DELETE FROM files WHERE id = ?", [file.id]);
+      await db.query("DELETE FROM files WHERE id = $1", [file.id]);
       
       deletedItems.files.push({ id: file.id, name: file.file_name });
       await addActivityLog(deletedBy, "delete", "file", file.id, file.file_name, "force_delete_folder");
     }
     
     // Get all subfolders
-    const [subfolders] = await inhouseDb.query("SELECT * FROM folders WHERE parent_id = ?", [folderId]);
+    const { rows: subfolders } = await db.query("SELECT * FROM folders WHERE parent_id = $1", [folderId]);
     
     // Recursively delete subfolders
     for (const subfolder of subfolders) {
@@ -1987,13 +1987,13 @@ async function recursivelyDeleteFolder(folderId, deletedBy) {
     }
     
     // Delete the folder itself from database
-    await inhouseDb.query("DELETE FROM folders WHERE id = ?", [folderId]);
+    await db.query("DELETE FROM folders WHERE id = $1", [folderId]);
     
     // Log the folder deletion with the correct folder name
     await addActivityLog(deletedBy, "delete", "folder", folderId, folderName, "force_delete");
     
   } catch (error) {
-    console.error("💥 Error in recursive delete:", error);
+    console.error("ðŸ’¥ Error in recursive delete:", error);
     throw error;
   }
   
@@ -2004,10 +2004,10 @@ async function recursivelyDeleteFolder(folderId, deletedBy) {
 router.delete("/bulk/delete", async (req, res) => {
   const { ids, updated_by, force } = req.body;
   
-  console.log("\n🗑️ ===== BULK DELETE REQUEST =====");
-  console.log("🆔 Item IDs:", ids);
-  console.log("👤 Updated by:", updated_by);
-  console.log("💪 Force delete:", force);
+  console.log("\nðŸ—‘ï¸ ===== BULK DELETE REQUEST =====");
+  console.log("ðŸ†” Item IDs:", ids);
+  console.log("ðŸ‘¤ Updated by:", updated_by);
+  console.log("ðŸ’ª Force delete:", force);
   
   try {
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -2028,7 +2028,7 @@ router.delete("/bulk/delete", async (req, res) => {
     for (const id of ids) {
       try {
         // Try to delete as file first
-        const [fileResult] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [id]);
+        const { rows: fileResult } = await db.query("SELECT * FROM files WHERE id = $1", [id]);
         
         if (fileResult.length > 0) {
           const file = fileResult[0];
@@ -2038,7 +2038,7 @@ router.delete("/bulk/delete", async (req, res) => {
             await unlinkAsync(file.file_path);
           }
           
-          await inhouseDb.query("DELETE FROM files WHERE id = ?", [id]);
+          await db.query("DELETE FROM files WHERE id = $1", [id]);
           await addActivityLog(updated_by, "delete", "file", file.id, file.file_name, "bulk_delete");
           
           results.deleted.push({ type: "file", id: file.id, name: file.file_name });
@@ -2046,7 +2046,7 @@ router.delete("/bulk/delete", async (req, res) => {
         }
         
         // Try to delete as folder
-        const [folderResult] = await inhouseDb.query("SELECT * FROM folders WHERE id = ?", [id]);
+        const { rows: folderResult } = await db.query("SELECT * FROM folders WHERE id = $1", [id]);
         
         if (folderResult.length > 0) {
           const folder = folderResult[0];
@@ -2057,10 +2057,10 @@ router.delete("/bulk/delete", async (req, res) => {
             results.deleted.push({ type: "folder", id: folder.id, name: folder.name, forceDeleted: true });
           } else {
             // Check if folder is empty
-            const [containedFiles] = await inhouseDb.query("SELECT COUNT(*) as count FROM files WHERE folder_id = ?", [id]);
-            const [containedFolders] = await inhouseDb.query("SELECT COUNT(*) as count FROM folders WHERE parent_id = ?", [id]);
+            const { rows: containedFiles } = await db.query("SELECT COUNT(*) as count FROM files WHERE folder_id = $1", [id]);
+            const { rows: containedFolders } = await db.query("SELECT COUNT(*) as count FROM folders WHERE parent_id = $1", [id]);
             
-            if (containedFiles[0].count > 0 || containedFolders[0].count > 0) {
+            if (parseInt(parseInt(containedFiles[0].count)) > 0 || parseInt(parseInt(containedFolders[0].count)) > 0) {
               results.errors.push({ 
                 id, 
                 name: folder.name, 
@@ -2069,7 +2069,7 @@ router.delete("/bulk/delete", async (req, res) => {
               continue;
             }
             
-            await inhouseDb.query("DELETE FROM folders WHERE id = ?", [id]);
+            await db.query("DELETE FROM folders WHERE id = $1", [id]);
             await addActivityLog(updated_by, "delete", "folder", folder.id, folder.name, "bulk_delete");
             
             results.deleted.push({ type: "folder", id: folder.id, name: folder.name });
@@ -2080,7 +2080,7 @@ router.delete("/bulk/delete", async (req, res) => {
         results.errors.push({ id, error: "Item not found" });
         
       } catch (itemError) {
-        console.error(`💥 Error deleting item ${id}:`, itemError);
+        console.error(`ðŸ’¥ Error deleting item ${id}:`, itemError);
         results.errors.push({ id, error: itemError.message });
       }
     }
@@ -2091,7 +2091,7 @@ router.delete("/bulk/delete", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error in bulk delete:", err);
+    console.error("ðŸ’¥ Error in bulk delete:", err);
     res.status(500).json({ error: "Bulk delete failed: " + err.message });
   }
 });
@@ -2100,12 +2100,12 @@ router.delete("/bulk/delete", async (req, res) => {
 router.get("/search", async (req, res) => {
   const { q: query, type, created_after, created_before, min_size, max_size, created_by } = req.query;
   
-  console.log("\n🔍 ===== SEARCH REQUEST =====");
-  console.log("🔎 Query:", query);
-  console.log("📂 Type filter:", type);
-  console.log("📅 Date filters:", { created_after, created_before });
-  console.log("📏 Size filters:", { min_size, max_size });
-  console.log("👤 Creator filter:", created_by);
+  console.log("\nðŸ” ===== SEARCH REQUEST =====");
+  console.log("ðŸ”Ž Query:", query);
+  console.log("ðŸ“‚ Type filter:", type);
+  console.log("ðŸ“… Date filters:", { created_after, created_before });
+  console.log("ðŸ“ Size filters:", { min_size, max_size });
+  console.log("ðŸ‘¤ Creator filter:", created_by);
   
   try {
     if (!query || query.trim() === '') {
@@ -2117,7 +2117,7 @@ router.get("/search", async (req, res) => {
     
     // Search files
     if (!type || type === 'file') {
-      console.log("🔍 Searching files...");
+      console.log("ðŸ” Searching files...");
       
       let sql = `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name,
                         fo.name AS folder_name
@@ -2125,45 +2125,45 @@ router.get("/search", async (req, res) => {
                  LEFT JOIN users u ON f.created_by = u.id
                  LEFT JOIN users u2 ON f.updated_by = u2.id
                  LEFT JOIN folders fo ON f.folder_id = fo.id
-                 WHERE f.file_name LIKE ?`;
+                 WHERE f.file_name LIKE $1`;
       
       const params = [searchTerm];
       
       if (created_after) {
-        sql += " AND f.created_at >= ?";
+        sql += " AND f.created_at >= $1";
         params.push(created_after);
       }
       
       if (created_before) {
-        sql += " AND f.created_at <= ?";
+        sql += " AND f.created_at <= $1";
         params.push(created_before);
       }
       
       if (min_size) {
-        sql += " AND f.file_size >= ?";
+        sql += " AND f.file_size >= $1";
         params.push(parseInt(min_size));
       }
       
       if (max_size) {
-        sql += " AND f.file_size <= ?";
+        sql += " AND f.file_size <= $1";
         params.push(parseInt(max_size));
       }
       
       if (created_by) {
-        sql += " AND f.created_by = ?";
+        sql += " AND f.created_by = $1";
         params.push(created_by);
       }
       
       sql += " ORDER BY f.file_name ASC LIMIT 100";
       
-      const [files] = await inhouseDb.query(sql, params);
+      const { rows: files } = await db.query(sql, params);
       results.files = files;
-      console.log("📎 Files found:", files.length);
+      console.log("ðŸ“Ž Files found:", files.length);
     }
     
     // Search folders
     if (!type || type === 'folder') {
-      console.log("🔍 Searching folders...");
+      console.log("ðŸ” Searching folders...");
       
       let sql = `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name,
                         pf.name AS parent_folder_name
@@ -2171,33 +2171,33 @@ router.get("/search", async (req, res) => {
                  LEFT JOIN users u ON f.created_by = u.id
                  LEFT JOIN users u2 ON f.updated_by = u2.id
                  LEFT JOIN folders pf ON f.parent_id = pf.id
-                 WHERE f.name LIKE ?`;
+                 WHERE f.name LIKE $1`;
       
       const params = [searchTerm];
       
       if (created_after) {
-        sql += " AND f.created_at >= ?";
+        sql += " AND f.created_at >= $1";
         params.push(created_after);
       }
       
       if (created_before) {
-        sql += " AND f.created_at <= ?";
+        sql += " AND f.created_at <= $1";
         params.push(created_before);
       }
       
       if (created_by) {
-        sql += " AND f.created_by = ?";
+        sql += " AND f.created_by = $1";
         params.push(created_by);
       }
       
       sql += " ORDER BY f.name ASC LIMIT 100";
       
-      const [folders] = await inhouseDb.query(sql, params);
+      const { rows: folders } = await db.query(sql, params);
       results.folders = folders;
-      console.log("📁 Folders found:", folders.length);
+      console.log("ðŸ“ Folders found:", folders.length);
     }
     
-    console.log("✅ Search completed");
+    console.log("âœ… Search completed");
     res.json({
       query: query.trim(),
       filters: { type, created_after, created_before, min_size, max_size, created_by },
@@ -2206,7 +2206,7 @@ router.get("/search", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error during search:", err);
+    console.error("ðŸ’¥ Error during search:", err);
     res.status(500).json({ error: "Search failed: " + err.message });
   }
 });
@@ -2214,19 +2214,19 @@ router.get("/search", async (req, res) => {
 
 // ================== Get Statistics ==================
 router.get("/stats", async (req, res) => {
-  console.log("\n📊 ===== GET STATISTICS =====");
+  console.log("\nðŸ“Š ===== GET STATISTICS =====");
   
   try {
     // Get total counts
-    const [fileCount] = await inhouseDb.query("SELECT COUNT(*) as count FROM files");
-    const [folderCount] = await inhouseDb.query("SELECT COUNT(*) as count FROM folders");
+    const { rows: fileCount } = await db.query("SELECT COUNT(*) as count FROM files");
+    const { rows: folderCount } = await db.query("SELECT COUNT(*) as count FROM folders");
     
     // Get total file size
-    const [sizeResult] = await inhouseDb.query("SELECT SUM(file_size) as total_size FROM files");
+    const { rows: sizeResult } = await db.query("SELECT SUM(file_size) as total_size FROM files");
     const totalSize = sizeResult[0].total_size || 0;
     
     // Get file type distribution
-    const [fileTypes] = await inhouseDb.query(`
+    const { rows: fileTypes } = await db.query(`
       SELECT file_type, COUNT(*) as count, SUM(file_size) as total_size
       FROM files 
       WHERE file_type IS NOT NULL AND file_type != ''
@@ -2236,16 +2236,16 @@ router.get("/stats", async (req, res) => {
     `);
     
     // Get recent activity
-    const [recentActivity] = await inhouseDb.query(`
+    const { rows: recentActivity } = await db.query(`
       SELECT COUNT(*) as count, action
       FROM activity_logs 
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+      WHERE created_at >= NOW() - INTERVAL '24 hours'
       GROUP BY action
       ORDER BY count DESC
     `);
     
     // Get top users by file count
-    const [topUsers] = await inhouseDb.query(`
+    const { rows: topUsers } = await db.query(`
       SELECT u.name, COUNT(*) as file_count, SUM(f.file_size) as total_size
       FROM files f
       JOIN users u ON f.created_by = u.id
@@ -2255,22 +2255,22 @@ router.get("/stats", async (req, res) => {
     `);
     
     const stats = {
-      totalFiles: fileCount[0].count,
-      totalFolders: folderCount[0].count,
+      totalFiles: parseInt(parseInt(fileCount[0].count)),
+      totalFolders: parseInt(parseInt(folderCount[0].count)),
       totalSize: totalSize,
       totalSizeFormatted: formatFileSize(totalSize),
       fileTypes: fileTypes,
       recentActivity: recentActivity,
       topUsers: topUsers,
-      averageFileSize: fileCount[0].count > 0 ? Math.round(totalSize / fileCount[0].count) : 0,
-      averageFileSizeFormatted: fileCount[0].count > 0 ? formatFileSize(Math.round(totalSize / fileCount[0].count)) : '0 Bytes'
+      averageFileSize: parseInt(parseInt(fileCount[0].count)) > 0 ? Math.round(totalSize / parseInt(parseInt(fileCount[0].count))) : 0,
+      averageFileSizeFormatted: parseInt(parseInt(fileCount[0].count)) > 0 ? formatFileSize(Math.round(totalSize / parseInt(parseInt(fileCount[0].count)))) : '0 Bytes'
     };
     
-    console.log("📊 Statistics:", stats);
+    console.log("ðŸ“Š Statistics:", stats);
     res.json(stats);
     
   } catch (err) {
-    console.error("💥 Error getting statistics:", err);
+    console.error("ðŸ’¥ Error getting statistics:", err);
     res.status(500).json({ error: "Failed to get statistics: " + err.message });
   }
 });
@@ -2286,55 +2286,59 @@ router.get("/activity-logs", async (req, res) => {
   const params = [];
 
   if (user_id) {
-    sql += " AND al.user_id = ?";
     params.push(user_id);
+    sql += ` AND al.user_id = $${params.length}`;
   }
   if (action) {
-    sql += " AND al.action = ?";
     params.push(action);
+    sql += ` AND al.action = $${params.length}`;
   }
   if (target_type) {
-    sql += " AND al.target_type = ?";
     params.push(target_type);
+    sql += ` AND al.target_type = $${params.length}`;
   }
 
-  sql += " ORDER BY al.created_at DESC LIMIT ? OFFSET ?";
-  params.push(parseInt(limit), parseInt(offset));
+  params.push(parseInt(limit, 10));
+  sql += ` ORDER BY al.created_at DESC LIMIT $${params.length}`;
+  params.push(parseInt(offset, 10));
+  sql += ` OFFSET $${params.length}`;
 
   try {
-    const [rows] = await inhouseDb.query(sql, params);
+    const { rows: rows } = await db.query(sql, params);
     
-    // Get total count for pagination
     let countSql = `SELECT COUNT(*) as total FROM activity_logs al WHERE 1=1`;
     const countParams = [];
     
     if (user_id) {
-      countSql += " AND al.user_id = ?";
       countParams.push(user_id);
+      countSql += ` AND al.user_id = $${countParams.length}`;
     }
     if (action) {
-      countSql += " AND al.action = ?";
       countParams.push(action);
+      countSql += ` AND al.action = $${countParams.length}`;
     }
     if (target_type) {
-      countSql += " AND al.target_type = ?";
       countParams.push(target_type);
+      countSql += ` AND al.target_type = $${countParams.length}`;
     }
     
-    const [countResult] = await inhouseDb.query(countSql, countParams);
+    const { rows: countResult } = await db.query(countSql, countParams);
+    const total = parseInt(countResult[0].total, 10) || 0;
+    const limitNum = parseInt(limit, 10);
+    const offsetNum = parseInt(offset, 10);
     
     res.json({
       logs: rows,
       pagination: {
-        total: countResult[0].total,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
-        hasMore: countResult[0].total > (parseInt(offset) + parseInt(limit))
+        total,
+        limit: limitNum,
+        offset: offsetNum,
+        hasMore: total > (offsetNum + limitNum)
       }
     });
   } catch (err) {
     console.error("Error fetching activity logs:", err);
-    res.status(500).json({ error: "Failed to fetch logs" });
+    res.status(500).json({ error: "Failed to fetch logs", details: err.message });
   }
 });
 
@@ -2342,10 +2346,10 @@ router.get("/activity-logs", async (req, res) => {
 router.post("/copy", async (req, res) => {
   const { source_ids, target_folder_id, created_by } = req.body;
   
-  console.log("\n📋 ===== COPY REQUEST =====");
-  console.log("🆔 Source IDs:", source_ids);
-  console.log("📁 Target folder ID:", target_folder_id);
-  console.log("👤 Created by:", created_by);
+  console.log("\nðŸ“‹ ===== COPY REQUEST =====");
+  console.log("ðŸ†” Source IDs:", source_ids);
+  console.log("ðŸ“ Target folder ID:", target_folder_id);
+  console.log("ðŸ‘¤ Created by:", created_by);
   
   try {
     if (!Array.isArray(source_ids) || source_ids.length === 0) {
@@ -2363,7 +2367,7 @@ router.post("/copy", async (req, res) => {
     
     // Validate target folder if provided
     if (target_folder_id) {
-      const [folderCheck] = await inhouseDb.query("SELECT id FROM folders WHERE id = ?", [target_folder_id]);
+      const { rows: folderCheck } = await db.query("SELECT id FROM folders WHERE id = $1", [target_folder_id]);
       if (folderCheck.length === 0) {
         return res.status(400).json({ error: "Target folder not found" });
       }
@@ -2374,7 +2378,7 @@ router.post("/copy", async (req, res) => {
     for (const sourceId of source_ids) {
       try {
         // Try to copy file
-        const [fileResult] = await inhouseDb.query("SELECT * FROM files WHERE id = ?", [sourceId]);
+        const { rows: fileResult } = await db.query("SELECT * FROM files WHERE id = $1", [sourceId]);
         
         if (fileResult.length > 0) {
           const originalFile = fileResult[0];
@@ -2384,10 +2388,10 @@ router.post("/copy", async (req, res) => {
           // Find unique name
           while (true) {
             const duplicateCheck = target_folder_id 
-              ? await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id = ?", [copyName, target_folder_id])
-              : await inhouseDb.query("SELECT id FROM files WHERE file_name = ? AND folder_id IS NULL", [copyName]);
+              ? await db.query("SELECT id FROM files WHERE file_name = $1 AND folder_id = $2", [copyName, target_folder_id])
+              : await db.query("SELECT id FROM files WHERE file_name = $1 AND folder_id IS NULL", [copyName]);
             
-            if (duplicateCheck[0].length === 0) break;
+            if (duplicateCheck.rows.length === 0) break;
             
             const nameWithoutExt = path.parse(originalFile.file_name).name;
             const ext = path.parse(originalFile.file_name).ext;
@@ -2400,9 +2404,9 @@ router.post("/copy", async (req, res) => {
           await fs.promises.copyFile(originalFile.file_path, newFilePath);
           
           // Insert copy into database
-          const [result] = await inhouseDb.query(
-            `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+          const { rows: [result] } = await db.query(
+      `INSERT INTO files (folder_id, file_name, file_path, file_type, file_size, created_by, updated_by, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) RETURNING id`,
             [
               target_folder_id || null,
               copyName,
@@ -2414,12 +2418,12 @@ router.post("/copy", async (req, res) => {
             ]
           );
           
-          await addActivityLog(created_by, "copy", "file", result.insertId, copyName, JSON.stringify({ source_id: sourceId }));
+          await addActivityLog(created_by, "copy", "file", result.id, copyName, JSON.stringify({ source_id: sourceId }));
           
           results.copied.push({
             type: "file",
             originalId: sourceId,
-            newId: result.insertId,
+            newId: result.id,
             originalName: originalFile.file_name,
             newName: copyName
           });
@@ -2428,7 +2432,7 @@ router.post("/copy", async (req, res) => {
         }
         
         // Try to copy folder (simplified - doesn't copy contents)
-        const [folderResult] = await inhouseDb.query("SELECT * FROM folders WHERE id = ?", [sourceId]);
+        const { rows: folderResult } = await db.query("SELECT * FROM folders WHERE id = $1", [sourceId]);
         
         if (folderResult.length > 0) {
           const originalFolder = folderResult[0];
@@ -2438,27 +2442,27 @@ router.post("/copy", async (req, res) => {
           // Find unique name
           while (true) {
             const duplicateCheck = target_folder_id 
-              ? await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id = ?", [copyName, target_folder_id])
-              : await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [copyName]);
+              ? await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id = $2", [copyName, target_folder_id])
+              : await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id IS NULL", [copyName]);
             
-            if (duplicateCheck[0].length === 0) break;
+            if (duplicateCheck.rows.length === 0) break;
             
             copyName = `${originalFolder.name} (Copy ${counter})`;
             counter++;
           }
           
-          const [result] = await inhouseDb.query(
-            `INSERT INTO folders (name, parent_id, created_by, updated_by, created_at, updated_at)
-             VALUES (?, ?, ?, ?, NOW(), NOW())`,
+          const { rows: [result] } = await db.query(
+      `INSERT INTO folders (name, parent_id, created_by, updated_by, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING id`,
             [copyName, target_folder_id || null, created_by, created_by]
           );
           
-          await addActivityLog(created_by, "copy", "folder", result.insertId, copyName, JSON.stringify({ source_id: sourceId }));
+          await addActivityLog(created_by, "copy", "folder", result.id, copyName, JSON.stringify({ source_id: sourceId }));
           
           results.copied.push({
             type: "folder",
             originalId: sourceId,
-            newId: result.insertId,
+            newId: result.id,
             originalName: originalFolder.name,
             newName: copyName
           });
@@ -2469,7 +2473,7 @@ router.post("/copy", async (req, res) => {
         results.errors.push({ id: sourceId, error: "Item not found" });
         
       } catch (itemError) {
-        console.error(`💥 Error copying item ${sourceId}:`, itemError);
+        console.error(`ðŸ’¥ Error copying item ${sourceId}:`, itemError);
         results.errors.push({ id: sourceId, error: itemError.message });
       }
     }
@@ -2480,7 +2484,7 @@ router.post("/copy", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error in copy operation:", err);
+    console.error("ðŸ’¥ Error in copy operation:", err);
     res.status(500).json({ error: "Copy failed: " + err.message });
   }
 });
@@ -2488,7 +2492,7 @@ router.post("/copy", async (req, res) => {
 /*
 // ================== Error Handler ==================
 router.use((error, req, res, next) => {
-  console.error("💥 Unhandled error in files router:", error);
+  console.error("ðŸ’¥ Unhandled error in files router:", error);
   
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
@@ -2510,19 +2514,19 @@ router.use((error, req, res, next) => {
 router.get("/info/:id", async (req, res) => {
   const { id } = req.params;
   
-  console.log("\n📋 ===== GET ITEM INFO =====");
-  console.log("🆔 Item ID:", id);
+  console.log("\nðŸ“‹ ===== GET ITEM INFO =====");
+  console.log("ðŸ†” Item ID:", id);
   
   try {
     // Check if it's a file
-    const [fileResult] = await inhouseDb.query(
+    const { rows: fileResult } = await db.query(
       `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name,
               fo.name AS folder_name, fo.id AS folder_id
        FROM files f
        LEFT JOIN users u ON f.created_by = u.id
        LEFT JOIN users u2 ON f.updated_by = u2.id
        LEFT JOIN folders fo ON f.folder_id = fo.id
-       WHERE f.id = ?`,
+       WHERE f.id = $1`,
       [id]
     );
     
@@ -2569,14 +2573,14 @@ router.get("/info/:id", async (req, res) => {
     }
     
     // Check if it's a folder
-    const [folderResult] = await inhouseDb.query(
+    const { rows: folderResult } = await db.query(
       `SELECT f.*, u.name AS created_by_name, u2.name AS updated_by_name,
               pf.name AS parent_folder_name, pf.id AS parent_folder_id
        FROM folders f
        LEFT JOIN users u ON f.created_by = u.id
        LEFT JOIN users u2 ON f.updated_by = u2.id
        LEFT JOIN folders pf ON f.parent_id = pf.id
-       WHERE f.id = ?`,
+       WHERE f.id = $1`,
       [id]
     );
     
@@ -2584,9 +2588,9 @@ router.get("/info/:id", async (req, res) => {
       const folder = folderResult[0];
       
       // Get folder statistics
-      const [fileCount] = await inhouseDb.query("SELECT COUNT(*) as count FROM files WHERE folder_id = ?", [id]);
-      const [subfolderCount] = await inhouseDb.query("SELECT COUNT(*) as count FROM folders WHERE parent_id = ?", [id]);
-      const [totalSize] = await inhouseDb.query("SELECT SUM(file_size) as total FROM files WHERE folder_id = ?", [id]);
+      const { rows: fileCount } = await db.query("SELECT COUNT(*) as count FROM files WHERE folder_id = $1", [id]);
+      const { rows: subfolderCount } = await db.query("SELECT COUNT(*) as count FROM folders WHERE parent_id = $1", [id]);
+      const { rows: totalSize } = await db.query("SELECT SUM(file_size) as total FROM files WHERE folder_id = $1", [id]);
       
       return res.json({
         type: "folder",
@@ -2607,8 +2611,8 @@ router.get("/info/:id", async (req, res) => {
         createdAt: folder.created_at,
         updatedAt: folder.updated_at,
         statistics: {
-          fileCount: fileCount[0].count,
-          subfolderCount: subfolderCount[0].count,
+          fileCount: parseInt(parseInt(fileCount[0].count)),
+          subfolderCount: parseInt(subfolderCount[0].count),
           totalSize: totalSize[0].total || 0,
           totalSizeFormatted: formatFileSize(totalSize[0].total || 0)
         }
@@ -2618,7 +2622,7 @@ router.get("/info/:id", async (req, res) => {
     return res.status(404).json({ error: "Item not found" });
     
   } catch (err) {
-    console.error("💥 Error getting item info:", err);
+    console.error("ðŸ’¥ Error getting item info:", err);
     res.status(500).json({ error: "Failed to get item info: " + err.message });
   }
 });
@@ -2627,9 +2631,9 @@ router.get("/info/:id", async (req, res) => {
 router.post("/folders/bulk", async (req, res) => {
   const { folders, created_by } = req.body;
   
-  console.log("\n📁 ===== BULK CREATE FOLDERS =====");
-  console.log("📥 Folders to create:", folders);
-  console.log("👤 Created by:", created_by);
+  console.log("\nðŸ“ ===== BULK CREATE FOLDERS =====");
+  console.log("ðŸ“¥ Folders to create:", folders);
+  console.log("ðŸ‘¤ Created by:", created_by);
   
   try {
     if (!Array.isArray(folders) || folders.length === 0) {
@@ -2660,7 +2664,7 @@ router.post("/folders/bulk", async (req, res) => {
         
         // Validate parent folder if provided
         if (parent_id) {
-          const [parentCheck] = await inhouseDb.query("SELECT id FROM folders WHERE id = ?", [parent_id]);
+          const { rows: parentCheck } = await db.query("SELECT id FROM folders WHERE id = $1", [parent_id]);
           if (parentCheck.length === 0) {
             results.errors.push({ folderData, error: "Parent folder not found" });
             continue;
@@ -2669,31 +2673,31 @@ router.post("/folders/bulk", async (req, res) => {
         
         // Check for duplicates
         const duplicateCheck = parent_id 
-          ? await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id = ?", [sanitizedName, parent_id])
-          : await inhouseDb.query("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [sanitizedName]);
+          ? await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id = $2", [sanitizedName, parent_id])
+          : await db.query("SELECT id FROM folders WHERE name = $1 AND parent_id IS NULL", [sanitizedName]);
         
-        if (duplicateCheck[0].length > 0) {
+        if (duplicateCheck.rows.length > 0) {
           results.errors.push({ folderData, error: "A folder with this name already exists in the same location" });
           continue;
         }
         
         // Create folder
-        const [result] = await inhouseDb.query(
-          `INSERT INTO folders (name, parent_id, created_by, updated_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, NOW(), NOW())`,
+        const { rows: [result] } = await db.query(
+      `INSERT INTO folders (name, parent_id, created_by, updated_by, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING id`,
           [sanitizedName, parent_id || null, created_by, created_by]
         );
         
-        await addActivityLog(created_by, "create", "folder", result.insertId, sanitizedName, "bulk_create");
+        await addActivityLog(created_by, "create", "folder", result.id, sanitizedName, "bulk_create");
         
         results.created.push({
-          id: result.insertId,
+          id: result.id,
           name: sanitizedName,
           parent_id: parent_id || null
         });
         
       } catch (folderError) {
-        console.error("💥 Error creating folder:", folderError);
+        console.error("ðŸ’¥ Error creating folder:", folderError);
         results.errors.push({ folderData, error: folderError.message });
       }
     }
@@ -2704,7 +2708,7 @@ router.post("/folders/bulk", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error in bulk folder creation:", err);
+    console.error("ðŸ’¥ Error in bulk folder creation:", err);
     res.status(500).json({ error: "Bulk folder creation failed: " + err.message });
   }
 });
@@ -2713,9 +2717,9 @@ router.post("/folders/bulk", async (req, res) => {
 router.get("/recent", async (req, res) => {
   const { limit = 20, user_id } = req.query;
   
-  console.log("\n🕒 ===== GET RECENT FILES =====");
-  console.log("📊 Limit:", limit);
-  console.log("👤 User filter:", user_id);
+  console.log("\nðŸ•’ ===== GET RECENT FILES =====");
+  console.log("ðŸ“Š Limit:", limit);
+  console.log("ðŸ‘¤ User filter:", user_id);
   
   try {
     let sql = `SELECT f.*, u.name AS created_by_name, fo.name AS folder_name
@@ -2727,14 +2731,14 @@ router.get("/recent", async (req, res) => {
     const params = [];
     
     if (user_id) {
-      sql += " AND f.created_by = ?";
+      sql += " AND f.created_by = $1";
       params.push(user_id);
     }
     
-    sql += " ORDER BY f.created_at DESC LIMIT ?";
+    sql += " ORDER BY f.created_at DESC LIMIT $1";
     params.push(parseInt(limit));
     
-    const [files] = await inhouseDb.query(sql, params);
+    const { rows: files } = await db.query(sql, params);
     
     res.json({
       files: files,
@@ -2743,18 +2747,18 @@ router.get("/recent", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error getting recent files:", err);
+    console.error("ðŸ’¥ Error getting recent files:", err);
     res.status(500).json({ error: "Failed to get recent files: " + err.message });
   }
 });
 
 // ================== Check Disk Space ==================
 router.get("/disk-usage", async (req, res) => {
-  console.log("\n💾 ===== CHECK DISK USAGE =====");
+  console.log("\nðŸ’¾ ===== CHECK DISK USAGE =====");
   
   try {
     // Get total size from database
-    const [dbSize] = await inhouseDb.query("SELECT SUM(file_size) as total FROM files");
+    const { rows: dbSize } = await db.query("SELECT SUM(file_size) as total FROM files");
     const totalDbSize = dbSize[0].total || 0;
     
     // Calculate actual disk usage by checking upload directory
@@ -2784,7 +2788,7 @@ router.get("/disk-usage", async (req, res) => {
     }
     
     // Get file count by type
-    const [fileTypes] = await inhouseDb.query(`
+    const { rows: fileTypes } = await db.query(`
       SELECT file_type, COUNT(*) as count, SUM(file_size) as size
       FROM files 
       WHERE file_type IS NOT NULL AND file_type != ''
@@ -2804,7 +2808,7 @@ router.get("/disk-usage", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error checking disk usage:", err);
+    console.error("ðŸ’¥ Error checking disk usage:", err);
     res.status(500).json({ error: "Failed to check disk usage: " + err.message });
   }
 });
@@ -2813,9 +2817,9 @@ router.get("/disk-usage", async (req, res) => {
 router.post("/cleanup", async (req, res) => {
   const { dry_run = true, updated_by } = req.body;
   
-  console.log("\n🧹 ===== CLEANUP ORPHANED FILES =====");
-  console.log("🔍 Dry run:", dry_run);
-  console.log("👤 Updated by:", updated_by);
+  console.log("\nðŸ§¹ ===== CLEANUP ORPHANED FILES =====");
+  console.log("ðŸ” Dry run:", dry_run);
+  console.log("ðŸ‘¤ Updated by:", updated_by);
   
   try {
     if (!updated_by) {
@@ -2828,7 +2832,7 @@ router.post("/cleanup", async (req, res) => {
     }
     
     // Find database records without physical files
-    const [dbFiles] = await inhouseDb.query("SELECT id, file_name, file_path FROM files");
+    const { rows: dbFiles } = await db.query("SELECT id, file_name, file_path FROM files");
     const missingFiles = [];
     
     for (const file of dbFiles) {
@@ -2850,7 +2854,7 @@ router.post("/cleanup", async (req, res) => {
           const stats = await fs.promises.stat(filePath);
           
           if (stats.isFile()) {
-            const [dbCheck] = await inhouseDb.query("SELECT id FROM files WHERE file_path = ?", [filePath]);
+            const { rows: dbCheck } = await db.query("SELECT id FROM files WHERE file_path = $1", [filePath]);
             if (dbCheck.length === 0) {
               orphanedFiles.push({
                 path: filePath,
@@ -2871,7 +2875,7 @@ router.post("/cleanup", async (req, res) => {
     if (!dry_run) {
       // Clean up database records for missing files
       for (const missingFile of missingFiles) {
-        await inhouseDb.query("DELETE FROM files WHERE id = ?", [missingFile.id]);
+        await db.query("DELETE FROM files WHERE id = $1", [missingFile.id]);
         await addActivityLog(updated_by, "cleanup_delete", "file", missingFile.id, missingFile.file_name, "missing_physical_file");
       }
       
@@ -2902,7 +2906,7 @@ router.post("/cleanup", async (req, res) => {
     });
     
   } catch (err) {
-    console.error("💥 Error during cleanup:", err);
+    console.error("ðŸ’¥ Error during cleanup:", err);
     res.status(500).json({ error: "Cleanup failed: " + err.message });
   }
 });
@@ -2911,7 +2915,7 @@ router.post("/cleanup", async (req, res) => {
 // GET /api/users - Get all users for sharing
 router.get('/users', async (req, res) => {
   try {
-    const [rows] = await inhouseDb.query(
+    const { rows: rows } = await db.query(
       "SELECT id, name, user_name, email, department, role FROM users ORDER BY name"
     );
     res.json(rows);
@@ -2926,9 +2930,9 @@ router.post("/star/:fileId", async (req, res) => {
   const { fileId } = req.params;
   const { user_id } = req.body;
 
-  console.log("\n⭐ ===== TOGGLE STAR FILE =====");
-  console.log("📎 File ID:", fileId);
-  console.log("👤 User ID:", user_id);
+  console.log("\nâ­ ===== TOGGLE STAR FILE =====");
+  console.log("ðŸ“Ž File ID:", fileId);
+  console.log("ðŸ‘¤ User ID:", user_id);
 
   try {
     if (!user_id) {
@@ -2941,37 +2945,37 @@ router.post("/star/:fileId", async (req, res) => {
     }
 
     // Check if file exists
-    const [fileCheck] = await inhouseDb.query("SELECT id, file_name FROM files WHERE id = ?", [fileId]);
+    const { rows: fileCheck } = await db.query("SELECT id, file_name FROM files WHERE id = $1", [fileId]);
     if (fileCheck.length === 0) {
       return res.status(404).json({ error: "File not found" });
     }
 
     // Check if already starred
-    const [existing] = await inhouseDb.query(
-      "SELECT id FROM starred_files WHERE user_id = ? AND file_id = ?",
+    const { rows: existing } = await db.query(
+      "SELECT id FROM starred_files WHERE user_id = $1 AND file_id = $2",
       [user_id, fileId]
     );
 
     if (existing.length > 0) {
-      // Already starred → unstar
-      await inhouseDb.query(
-        "DELETE FROM starred_files WHERE user_id = ? AND file_id = ?",
+      // Already starred â†’ unstar
+      await db.query(
+        "DELETE FROM starred_files WHERE user_id = $1 AND file_id = $2",
         [user_id, fileId]
       );
-      console.log("✅ File unstarred");
+      console.log("âœ… File unstarred");
       return res.json({ message: "File unstarred successfully", starred: false, fileId, fileName: fileCheck[0].file_name });
     } else {
-      // Not starred → star it
-      await inhouseDb.query(
-        "INSERT INTO starred_files (user_id, file_id, created_at) VALUES (?, ?, NOW())",
+      // Not starred â†’ star it
+      await db.query(
+        "INSERT INTO starred_files (user_id, file_id, created_at) VALUES ($1, $2, NOW())",
         [user_id, fileId]
       );
-      console.log("✅ File starred");
+      console.log("âœ… File starred");
       return res.json({ message: "File starred successfully", starred: true, fileId, fileName: fileCheck[0].file_name });
     }
 
   } catch (err) {
-    console.error("💥 Error toggling star:", err);
+    console.error("ðŸ’¥ Error toggling star:", err);
     res.status(500).json({ error: "Failed to toggle star: " + err.message });
   }
 });
@@ -2980,8 +2984,8 @@ router.post("/star/:fileId", async (req, res) => {
 router.get("/starred", async (req, res) => {
   const { user_id } = req.query;
 
-  console.log("\n⭐ ===== GET STARRED FILES =====");
-  console.log("👤 User ID:", user_id);
+  console.log("\nâ­ ===== GET STARRED FILES =====");
+  console.log("ðŸ‘¤ User ID:", user_id);
 
   try {
     if (!user_id) {
@@ -2993,7 +2997,7 @@ router.get("/starred", async (req, res) => {
       return res.status(400).json({ error: "Invalid user" });
     }
 
-    const [starredFiles] = await inhouseDb.query(
+    const { rows: starredFiles } = await db.query(
       `SELECT f.*, 
               sf.created_at AS starred_at,
               u.name AS created_by_name,
@@ -3002,12 +3006,12 @@ router.get("/starred", async (req, res) => {
        JOIN files f ON sf.file_id = f.id
        LEFT JOIN users u ON f.created_by = u.id
        LEFT JOIN folders fo ON f.folder_id = fo.id
-       WHERE sf.user_id = ?
+       WHERE sf.user_id = $1
        ORDER BY sf.created_at DESC`,
       [user_id]
     );
 
-    console.log("⭐ Starred files found:", starredFiles.length);
+    console.log("â­ Starred files found:", starredFiles.length);
 
     res.json({
       starredFiles,
@@ -3015,7 +3019,7 @@ router.get("/starred", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("💥 Error getting starred files:", err);
+    console.error("ðŸ’¥ Error getting starred files:", err);
     res.status(500).json({ error: "Failed to get starred files: " + err.message });
   }
 });
@@ -3025,9 +3029,9 @@ router.delete("/star/:fileId", async (req, res) => {
   const { fileId } = req.params;
   const { user_id } = req.body;
 
-  console.log("\n⭐ ===== UNSTAR FILE =====");
-  console.log("📎 File ID:", fileId);
-  console.log("👤 User ID:", user_id);
+  console.log("\nâ­ ===== UNSTAR FILE =====");
+  console.log("ðŸ“Ž File ID:", fileId);
+  console.log("ðŸ‘¤ User ID:", user_id);
 
   try {
     if (!user_id) {
@@ -3039,20 +3043,21 @@ router.delete("/star/:fileId", async (req, res) => {
       return res.status(400).json({ error: "Invalid user" });
     }
 
-    const [result] = await inhouseDb.query(
-      "DELETE FROM starred_files WHERE user_id = ? AND file_id = ?",
+    const { rows: result } = await db.query(
+      "DELETE FROM starred_files WHERE user_id = $1 AND file_id = $2",
       [user_id, fileId]
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Star not found — file was not starred by this user" });
+    // pg DELETE returns result with rowCount
+    if (!result || result.length === 0) {
+      return res.status(404).json({ error: "Star not found â€” file was not starred by this user" });
     }
 
-    console.log("✅ File unstarred");
+    console.log("âœ… File unstarred");
     res.json({ message: "File unstarred successfully", starred: false, fileId });
 
   } catch (err) {
-    console.error("💥 Error unstarring file:", err);
+    console.error("ðŸ’¥ Error unstarring file:", err);
     res.status(500).json({ error: "Failed to unstar file: " + err.message });
   }
 });
@@ -3067,8 +3072,8 @@ router.get("/star/status/:fileId", async (req, res) => {
       return res.status(400).json({ error: "user_id is required" });
     }
 
-    const [result] = await inhouseDb.query(
-      "SELECT id, created_at FROM starred_files WHERE user_id = ? AND file_id = ?",
+    const { rows: result } = await db.query(
+      "SELECT id, created_at FROM starred_files WHERE user_id = $1 AND file_id = $2",
       [user_id, fileId]
     );
 
@@ -3079,7 +3084,7 @@ router.get("/star/status/:fileId", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("💥 Error checking star status:", err);
+    console.error("ðŸ’¥ Error checking star status:", err);
     res.status(500).json({ error: "Failed to check star status: " + err.message });
   }
 });
@@ -3087,6 +3092,6 @@ router.get("/star/status/:fileId", async (req, res) => {
 // Add error handler at the end
 router.use(handleMulterError);
 
-console.log("📁 Enhanced Files router loaded with comprehensive features");
+console.log("ðŸ“ Enhanced Files router loaded with comprehensive features");
 
 module.exports = router;
