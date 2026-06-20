@@ -1,4 +1,4 @@
-// ============================================
+﻿// ============================================
 // COMPLETE FIXED CHAT CONTEXT
 // File: contexts/ChatContext.tsx
 // ============================================
@@ -46,7 +46,7 @@ export interface Conversation {
   user_name?: string;
   name?: string;
   email?: string;
-  position?: string;  // ✅ ADD THIS
+  position?: string;  // âœ… ADD THIS
   lastMessage?: string;
   lastMessageTime?: string;
   unreadCount: number;
@@ -92,13 +92,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
 
   const activeConversationRef = useRef<number | null>(null);
   const currentUserRef = useRef<User | null>(null);
-  const lastReadConversationRef = useRef<number | null>(null); // ✅ NEW
+  const lastReadConversationRef = useRef<number | null>(null); // âœ… NEW
 
   const typingPollInterval = useRef<NodeJS.Timeout | null>(null);
   const conversationsPollInterval = useRef<NodeJS.Timeout | null>(null);
   const conversationsPollFailures = useRef(0);
 
-  const API_URL = import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}";
+  const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3002";
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
 
   // Update refs when state changes
@@ -111,35 +111,35 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   }, [currentUser]);
 
   // ============================================
-  // 1️⃣ GET CONVERSATIONS
+  // 1ï¸âƒ£ GET CONVERSATIONS
   // ============================================
   const getConversations = useCallback(async () => {
     try {
-      console.log('📤 Fetching conversations...');
+      console.log('ðŸ“¤ Fetching conversations...');
       const response = await fetch(`${API_URL}/api/chat/conversations`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!response.ok) throw new Error('Failed to fetch conversations');
       const data = await response.json();
-      console.log('✅ Conversations fetched:', data.length);
+      console.log('âœ… Conversations fetched:', data.length);
       setConversations(data);
     } catch (error) {
-      console.error('❌ Error fetching conversations:', error);
+      console.error('âŒ Error fetching conversations:', error);
     }
   }, [API_URL, token]);
 
   // ============================================
-  // 2️⃣ MARK AS READ - FIXED
+  // 2ï¸âƒ£ MARK AS READ - FIXED
   // ============================================
   const markAsRead = useCallback(
     async (conversationId: number) => {
       try {
-        console.log('📤 Marking messages as read for conversation:', conversationId);
+        console.log('ðŸ“¤ Marking messages as read for conversation:', conversationId);
         
-        // ✅ Store which conversation we just marked as read
+        // âœ… Store which conversation we just marked as read
         lastReadConversationRef.current = conversationId;
         
-        // ✅ FIX 1: Immediately update conversations state FIRST
+        // âœ… FIX 1: Immediately update conversations state FIRST
         setConversations(prev =>
           prev.map(conv =>
             conv.id === conversationId
@@ -148,7 +148,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
           )
         );
         
-        // ✅ FIX 2: Update messages state
+        // âœ… FIX 2: Update messages state
         setMessages(prev =>
           prev.map(msg =>
             msg.conversationId === conversationId && msg.senderId !== currentUser?.id
@@ -157,7 +157,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
           )
         );
 
-        // ✅ FIX 3: Then update on server
+        // âœ… FIX 3: Then update on server
         const response = await fetch(`${API_URL}/api/chat/mark-read`, {
           method: 'PUT',
           headers: {
@@ -168,18 +168,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         });
 
         if (response.ok) {
-          console.log('✅ Server marked messages as read');
+          console.log('âœ… Server marked messages as read');
           
-          // ✅ Clear the ref after 2 seconds
+          // âœ… Clear the ref after 2 seconds
           setTimeout(() => {
             lastReadConversationRef.current = null;
           }, 2000);
         } else {
-          console.error('❌ Failed to mark as read on server');
+          console.error('âŒ Failed to mark as read on server');
           lastReadConversationRef.current = null;
         }
       } catch (error) {
-        console.error('❌ Error marking as read:', error);
+        console.error('âŒ Error marking as read:', error);
         lastReadConversationRef.current = null;
       }
     },
@@ -187,16 +187,16 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   );
 
   // ============================================
-  // 3️⃣ GET MESSAGES - FIXED
+  // 3ï¸âƒ£ GET MESSAGES - FIXED
   // ============================================
   const getMessages = useCallback(
     async (conversationId: number) => {
       try {
-        console.log('📤 Fetching messages for conversation:', conversationId);
+        console.log('ðŸ“¤ Fetching messages for conversation:', conversationId);
 
         setActiveConversation(conversationId);
         
-        // ✅ Mark as read IMMEDIATELY
+        // âœ… Mark as read IMMEDIATELY
         setConversations(prev =>
           prev.map(conv =>
             conv.id === conversationId
@@ -211,7 +211,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         );
         if (!response.ok) throw new Error('Failed to fetch messages');
         const data = await response.json();
-        console.log('✅ Messages fetched:', data.length);
+        console.log('âœ… Messages fetched:', data.length);
         
         setMessages(data);
 
@@ -224,19 +224,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
 
         await markAsRead(conversationId);
       } catch (error) {
-        console.error('❌ Error fetching messages:', error);
+        console.error('âŒ Error fetching messages:', error);
       }
     },
     [API_URL, token, socket, currentUser, markAsRead]
   );
 
   // ============================================
-  // 4️⃣ SEND MESSAGE
+  // 4ï¸âƒ£ SEND MESSAGE
   // ============================================
   const sendMessage = useCallback(
     async (conversationId: number, content: string, messageType = 'text', fileUrl?: string) => {
       try {
-        console.log('📤 Sending message...', { conversationId, messageType });
+        console.log('ðŸ“¤ Sending message...', { conversationId, messageType });
 
         const response = await fetch(`${API_URL}/api/chat/message`, {
           method: 'POST',
@@ -258,7 +258,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         }
 
         const message = await response.json();
-        console.log('✅ Message sent successfully:', message.id);
+        console.log('âœ… Message sent successfully:', message.id);
 
         setMessages(prev => [...prev, message]);
 
@@ -277,7 +277,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
 
         await getConversations();
       } catch (error) {
-        console.error('❌ Error sending message:', error);
+        console.error('âŒ Error sending message:', error);
         throw error;
       }
     },
@@ -285,12 +285,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   );
 
   // ============================================
-  // 5️⃣ CREATE CONVERSATION
+  // 5ï¸âƒ£ CREATE CONVERSATION
   // ============================================
   const createConversation = useCallback(
     async (otherUserId: number) => {
       try {
-        console.log('📤 Creating conversation with user:', otherUserId);
+        console.log('ðŸ“¤ Creating conversation with user:', otherUserId);
         const response = await fetch(`${API_URL}/api/chat/conversation`, {
           method: 'POST',
           headers: {
@@ -306,13 +306,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         }
 
         const data = await response.json();
-        console.log('✅ Conversation created:', data);
+        console.log('âœ… Conversation created:', data);
 
         await getConversations();
 
         return data.id;
       } catch (error) {
-        console.error('❌ Error creating conversation:', error);
+        console.error('âŒ Error creating conversation:', error);
         throw error;
       }
     },
@@ -320,12 +320,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   );
 
   // ============================================
-  // 6️⃣ DELETE MESSAGE
+  // 6ï¸âƒ£ DELETE MESSAGE
   // ============================================
   const deleteMessage = useCallback(
     async (messageId: number) => {
       try {
-        console.log('🗑️ Deleting message:', messageId);
+        console.log('ðŸ—‘ï¸ Deleting message:', messageId);
         
         const response = await fetch(`${API_URL}/api/chat/message/${messageId}`, {
           method: 'DELETE',
@@ -335,7 +335,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         if (!response.ok) throw new Error('Failed to delete message');
 
         const data = await response.json();
-        console.log('✅ Message deleted');
+        console.log('âœ… Message deleted');
 
         setMessages(prev =>
           prev.map(msg =>
@@ -360,14 +360,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
 
         await getConversations();
       } catch (error) {
-        console.error('❌ Error deleting message:', error);
+        console.error('âŒ Error deleting message:', error);
       }
     },
     [API_URL, token, socket, activeConversation, getConversations]
   );
 
   // ============================================
-  // 7️⃣ SET TYPING
+  // 7ï¸âƒ£ SET TYPING
   // ============================================
   const setTyping = useCallback(
     async (conversationId: number, isTyping: boolean) => {
@@ -383,14 +383,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
           body: JSON.stringify({ conversationId, isTyping })
         });
       } catch (error) {
-        console.error('❌ Error setting typing status:', error);
+        console.error('âŒ Error setting typing status:', error);
       }
     },
     [API_URL, token, currentUser]
   );
 
   // ============================================
-  // 8️⃣ GET UNREAD COUNT
+  // 8ï¸âƒ£ GET UNREAD COUNT
   // ============================================
   const getUnreadCount = useCallback(
     async (conversationId: number): Promise<number> => {
@@ -403,7 +403,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         const data = await response.json();
         return data.unreadCount;
       } catch (error) {
-        console.error('❌ Error fetching unread count:', error);
+        console.error('âŒ Error fetching unread count:', error);
         return 0;
       }
     },
@@ -411,7 +411,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   );
 
   // ============================================
-  // 9️⃣ GET ALL UNREAD MESSAGES
+  // 9ï¸âƒ£ GET ALL UNREAD MESSAGES
   // ============================================
   const getAllUnreadMessages = useCallback(
     async (): Promise<Message[]> => {
@@ -423,7 +423,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
         const data = await response.json();
         return data;
       } catch (error) {
-        console.error('❌ Error fetching unread messages:', error);
+        console.error('âŒ Error fetching unread messages:', error);
         return [];
       }
     },
@@ -431,7 +431,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   );
 
   // ============================================
-  // 🔟 ATTACH FILE
+  // ðŸ”Ÿ ATTACH FILE
   // ============================================
   const attachFile = useCallback(
     async (conversationId: number, file: File): Promise<string | null> => {
@@ -474,7 +474,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
 
         return message.fileUrl;
       } catch (error) {
-        console.error('❌ Error attaching file:', error);
+        console.error('âŒ Error attaching file:', error);
         throw error;
       }
     },
@@ -590,10 +590,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   // ============================================
   const initializeSocket = useCallback((userId: number, userData: User) => {
     try {
-      console.log('🔌 Connecting to Socket.io...');
+      console.log('ðŸ”Œ Connecting to Socket.io...');
 
       if (!token) {
-        console.error('❌ No authentication token found');
+        console.error('âŒ No authentication token found');
         return;
       }
 
@@ -607,7 +607,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
       });
 
       newSocket.on('connect', () => {
-        console.log('✅ Connected to socket server');
+        console.log('âœ… Connected to socket server');
         setIsConnected(true);
         conversationsPollFailures.current = 0;
 
@@ -621,7 +621,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
       });
 
       newSocket.on('connect_error', (error: any) => {
-        console.error('❌ Socket connection error:', error);
+        console.error('âŒ Socket connection error:', error);
       });
 
       newSocket.on('user-online', (data: { userId: number; userName: string; isOnline: boolean }) => {
@@ -669,7 +669,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
               );
             }
           } catch (error) {
-            console.error('❌ Error auto-marking message as read:', error);
+            console.error('âŒ Error auto-marking message as read:', error);
           }
         }
 
@@ -700,7 +700,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
       });
 
       newSocket.on('disconnect', () => {
-        console.log('❌ Disconnected from socket server');
+        console.log('âŒ Disconnected from socket server');
         setIsConnected(false);
       });
 
@@ -730,7 +730,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   }, [socket, currentUser?.id]);
 
   const handleSetActiveConversation = useCallback((conversationId: number | null) => {
-    console.log('🔄 Setting active conversation:', conversationId);
+    console.log('ðŸ”„ Setting active conversation:', conversationId);
     setActiveConversation(conversationId);
     activeConversationRef.current = conversationId;
   }, []);

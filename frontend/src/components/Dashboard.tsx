@@ -125,7 +125,7 @@ export default function Dashboard({ currentUser }: DashboardProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showModal, setShowModal] = useState(false);
 
-  const API_BASE = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/files`;
+  const API_BASE = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files`;
 
   // ============================================
   // LIFECYCLE
@@ -208,7 +208,7 @@ export default function Dashboard({ currentUser }: DashboardProps) {
   const loadSharedFiles = async () => {
     try {
       setSharedLoading(true);
-      const response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/shared-with-me', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/shared-with-me`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       if (response.ok) {

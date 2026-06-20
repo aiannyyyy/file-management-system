@@ -270,7 +270,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const [versionsLoading, setVersionsLoading]   = useState(false);
 
   const CURRENT_USER_ID = currentUser?.id ? currentUser.id.toString() : '1';
-  const CATEGORY_MOVE_API = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/category-move`;
+  const CATEGORY_MOVE_API = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/category-move`;
 
   const MAX_FILE_SIZE   = 50  * 1024 * 1024;
   const MAX_TOTAL_SIZE  = 200 * 1024 * 1024;
@@ -333,7 +333,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const fetchCategories = async () => {
     try {
       setLoading(true);
-      const res = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories');
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories`);
       if (!res.ok) throw new Error('Failed to fetch categories');
       const data = await res.json();
       setCategories(data.categories || []);
@@ -347,13 +347,13 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const fetchFilesAndFolders = async () => {
     try {
       setLoading(true);
-      let folderUrl = '${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders';
+      let folderUrl = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders`;
       const fp = new URLSearchParams();
       if (currentCategoryId) fp.append('category_id', currentCategoryId.toString());
       fp.append('parent_folder_id', currentFolderId === null ? 'null' : currentFolderId.toString());
       if (fp.toString()) folderUrl += `?${fp}`;
 
-      let fileUrl = '${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files';
+      let fileUrl = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files`;
       const fip = new URLSearchParams();
       if (currentCategoryId) fip.append('category_id', currentCategoryId.toString());
       fip.append('folder_id', currentFolderId === null ? 'null' : currentFolderId.toString());
@@ -391,7 +391,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/users/all', {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/users/all`, {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
       });
       if (res.status === 401) { localStorage.removeItem('token'); localStorage.removeItem('user'); window.location.href = '/login'; return; }
@@ -583,7 +583,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     if (!inlineFolderName.trim() || !moveTargetCategoryId) return;
     const nameToCreate = inlineFolderName.trim();
     try {
-      const res = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders', {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -830,7 +830,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
         if (dup) { setModalError(`Category "${categoryForm.name.trim()}" already exists.`); return; }
 
         if (modalMode === 'add') {
-          response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories', {
+          response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...categoryForm, created_by: CURRENT_USER_ID })
           });
@@ -851,7 +851,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
         if (dup) { setModalError(`Folder "${folderForm.name.trim()}" already exists here.`); return; }
 
         if (modalMode === 'add') {
-          response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders', {
+          response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...folderForm, created_by: CURRENT_USER_ID })
           });
@@ -947,7 +947,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
         const fd = new FormData();
         fd.append('file', uploadFiles[0]); fd.append('category_id', currentCategoryId.toString()); fd.append('created_by', CURRENT_USER_ID);
         if (currentFolderId) fd.append('folder_id', currentFolderId.toString());
-        response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload-single', { method: 'POST', body: fd });
+        response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload-single`, { method: 'POST', body: fd });
 
         if (response.status === 409) {
           const conflictData = await response.json();
@@ -957,9 +957,9 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
           return;
         }
       } else if (uploadMode === 'bulk') {
-        response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/bulk-upload', { method: 'POST', body: formData });
+        response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/bulk-upload`, { method: 'POST', body: formData });
       } else {
-        response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload-multiple', { method: 'POST', body: formData });
+        response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload-multiple`, { method: 'POST', body: formData });
       }
 
       if (!response?.ok) throw new Error((await response?.json())?.error || 'Upload failed');
@@ -987,7 +987,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     if (!uploadConflict) return;
     setSubmitting(true);
     try {
-      const response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload/resolve', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload/resolve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

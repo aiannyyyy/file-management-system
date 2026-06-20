@@ -229,8 +229,8 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
   // ↑↑↑ END NEW STATE ↑↑↑
 
   const CURRENT_USER_ID = currentUser.id?.toString() || '1';
-  const API_BASE = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/files`;
-  const MOVE_API = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/move`;
+  const API_BASE = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files`;
+  const MOVE_API = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/move`;
   const isMainPage = currentFolder === null;
 
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -349,7 +349,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/users/all', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/users/all`, {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
       });
       if (response.status === 401) {

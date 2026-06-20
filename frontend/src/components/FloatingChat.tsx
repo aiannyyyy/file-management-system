@@ -71,7 +71,7 @@ const FloatingChat: React.FC = () => {
 
   const API_URL = typeof process !== 'undefined' && process.env?.REACT_APP_API_URL 
     ? process.env.REACT_APP_API_URL 
-    : import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}";
+    : import.meta.env.VITE_API_URL || "http://localhost:3002";
   const token = typeof localStorage !== 'undefined' 
     ? (localStorage.getItem('token') || localStorage.getItem('authToken')) 
     : null;
