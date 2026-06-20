@@ -9,6 +9,7 @@ import Dashboard from "./components/Dashboard";
 import Files from "./components/Files";
 import Categories from "./components/Categories";
 import Login from "./components/Login";
+import Register from "./components/Register";
 import Layout from "./components/Layout";
 import FloatingChat from "./components/FloatingChat";
 
@@ -140,6 +141,7 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userData, setUserData] = useState<UserData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [showRegister, setShowRegister] = useState(false);
 
   // Check for existing token on app load
   useEffect(() => {
@@ -226,9 +228,23 @@ export default function App() {
     );
   }
 
-  // If not authenticated, show login
+  // If not authenticated, show login or register
   if (!isAuthenticated || !userData) {
-    return <Login onLoginSuccess={handleLoginSuccess} />;
+    if (showRegister) {
+      return (
+        <Register
+          onBack={() => setShowRegister(false)}
+          onSuccess={() => setShowRegister(false)}
+        />
+      );
+    }
+
+    return (
+      <Login
+        onLoginSuccess={handleLoginSuccess}
+        onRegister={() => setShowRegister(true)}
+      />
+    );
   }
 
   // ✅ FIXED: Authenticated - wrap everything with ChatProvider
