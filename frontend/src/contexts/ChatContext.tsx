@@ -98,7 +98,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode; userId?: number
   const conversationsPollInterval = useRef<NodeJS.Timeout | null>(null);
   const conversationsPollFailures = useRef(0);
 
-  const API_URL = 'http://localhost:3002';
+  const API_URL = import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}";
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
 
   // Update refs when state changes

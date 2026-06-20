@@ -229,8 +229,8 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
   // ↑↑↑ END NEW STATE ↑↑↑
 
   const CURRENT_USER_ID = currentUser.id?.toString() || '1';
-  const API_BASE = 'http://localhost:3002/api/files';
-  const MOVE_API = 'http://localhost:3002/api/move'; // ← NEW
+  const API_BASE = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/files`;
+  const MOVE_API = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/move`;
   const isMainPage = currentFolder === null;
 
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -349,7 +349,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const response = await fetch('http://localhost:3002/api/share/users/all', {
+      const response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/users/all', {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
       });
       if (response.status === 401) {
@@ -789,7 +789,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) throw new Error('Authentication token missing');
-      const res = await fetch(`http://localhost:3002/api/share/files/${selectedFileForShares.id}/share`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/files/${selectedFileForShares.id}/share`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ userIds: selectedUsers.map(u => u.id?.toString()) })
@@ -813,7 +813,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     setLoadingShares(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:3002/api/share/files/${fileId}/shares`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/files/${fileId}/shares`, { headers: { 'Authorization': `Bearer ${token}` } });
       if (!res.ok) throw new Error('Failed to load shares');
       const data = await res.json();
       setCurrentFileShares(data.data || data.users || []);
@@ -825,7 +825,7 @@ const Files: React.FC<FilesProps> = ({ currentUser }) => {
     if (!confirm('Remove access for this user?')) return;
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:3002/api/share/shares/${shareId}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/shares/${shareId}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
       if (!res.ok) throw new Error('Failed to remove share');
       setSuccess('✅ Access removed successfully!');
       if (selectedFileForShares) await loadFileShares(selectedFileForShares.id);

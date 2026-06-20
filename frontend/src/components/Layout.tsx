@@ -146,7 +146,7 @@ export default function Layout({ children, userData, onLogout }: LayoutProps) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const notificationRef = useRef<HTMLDivElement>(null);
 
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+  const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}";
 
   useEffect(() => {
     setMounted(true);

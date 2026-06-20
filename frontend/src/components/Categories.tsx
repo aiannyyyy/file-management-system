@@ -270,7 +270,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const [versionsLoading, setVersionsLoading]   = useState(false);
 
   const CURRENT_USER_ID = currentUser?.id ? currentUser.id.toString() : '1';
-  const CATEGORY_MOVE_API = 'http://localhost:3002/api/category-move';
+  const CATEGORY_MOVE_API = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/category-move`;
 
   const MAX_FILE_SIZE   = 50  * 1024 * 1024;
   const MAX_TOTAL_SIZE  = 200 * 1024 * 1024;
@@ -333,7 +333,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const fetchCategories = async () => {
     try {
       setLoading(true);
-      const res = await fetch('http://localhost:3002/api/categories');
+      const res = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories');
       if (!res.ok) throw new Error('Failed to fetch categories');
       const data = await res.json();
       setCategories(data.categories || []);
@@ -347,13 +347,13 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const fetchFilesAndFolders = async () => {
     try {
       setLoading(true);
-      let folderUrl = 'http://localhost:3002/api/folders';
+      let folderUrl = '${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders';
       const fp = new URLSearchParams();
       if (currentCategoryId) fp.append('category_id', currentCategoryId.toString());
       fp.append('parent_folder_id', currentFolderId === null ? 'null' : currentFolderId.toString());
       if (fp.toString()) folderUrl += `?${fp}`;
 
-      let fileUrl = 'http://localhost:3002/api/files';
+      let fileUrl = '${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files';
       const fip = new URLSearchParams();
       if (currentCategoryId) fip.append('category_id', currentCategoryId.toString());
       fip.append('folder_id', currentFolderId === null ? 'null' : currentFolderId.toString());
@@ -369,7 +369,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
       let starredIds = new Set<number>();
       try {
         const starredRes = await fetch(
-          `http://localhost:3002/api/starred-files?user_id=${CURRENT_USER_ID}`,
+          `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/starred-files?user_id=${CURRENT_USER_ID}`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         if (starredRes.ok) {
@@ -391,7 +391,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('http://localhost:3002/api/share/users/all', {
+      const res = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/users/all', {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
       });
       if (res.status === 401) { localStorage.removeItem('token'); localStorage.removeItem('user'); window.location.href = '/login'; return; }
@@ -412,7 +412,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     setSubmitting(true);
     setModalError('');
     try {
-      const res = await fetch(`http://localhost:3002/api/files/${file.id}`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${file.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newFileName, updated_by: CURRENT_USER_ID })
@@ -583,7 +583,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     if (!inlineFolderName.trim() || !moveTargetCategoryId) return;
     const nameToCreate = inlineFolderName.trim();
     try {
-      const res = await fetch('http://localhost:3002/api/folders', {
+      const res = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -655,7 +655,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     setVersionsLoading(true);
     setShowVersionModal(true);
     try {
-      const res = await fetch(`http://localhost:3002/api/files/${file.id}/versions`);
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${file.id}/versions`);
       const data = await res.json();
       setVersions(data.versions || []);
     } catch {} finally { setVersionsLoading(false); }
@@ -664,7 +664,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const handleRestoreVersion = async (fileId: number, versionId: number) => {
     if (!confirm('Restore this version? Current file will be saved as a new version.')) return;
     try {
-      const res = await fetch(`http://localhost:3002/api/files/versions/${fileId}/restore/${versionId}`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/versions/${fileId}/restore/${versionId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ restored_by: CURRENT_USER_ID })
@@ -679,7 +679,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const handleDeleteVersion = async (fileId: number, versionId: number) => {
     if (!confirm('Delete this version permanently?')) return;
     try {
-      const res = await fetch(`http://localhost:3002/api/files/versions/${fileId}/version/${versionId}`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/versions/${fileId}/version/${versionId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deleted_by: CURRENT_USER_ID })
@@ -724,7 +724,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) throw new Error('Authentication token missing');
-      const res = await fetch(`http://localhost:3002/api/share/category-files/${selectedFileForShares.id}/share`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/category-files/${selectedFileForShares.id}/share`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ userIds: selectedUsers.map(u => u.id?.toString()) })
@@ -744,7 +744,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) throw new Error('Authentication token missing');
-      const res = await fetch(`http://localhost:3002/api/share/category-files/${fileId}/shares`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/category-files/${fileId}/shares`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to load shares');
       const data = await res.json();
       setCurrentFileShares(data.data || []);
@@ -758,7 +758,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) throw new Error('Authentication token missing');
-      const res = await fetch(`http://localhost:3002/api/share/shares/${shareId}`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/shares/${shareId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
       });
@@ -830,12 +830,12 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
         if (dup) { setModalError(`Category "${categoryForm.name.trim()}" already exists.`); return; }
 
         if (modalMode === 'add') {
-          response = await fetch('http://localhost:3002/api/categories', {
+          response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...categoryForm, created_by: CURRENT_USER_ID })
           });
         } else {
-          response = await fetch(`http://localhost:3002/api/categories/${selectedItem.id}`, {
+          response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories/${selectedItem.id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...categoryForm, updated_by: CURRENT_USER_ID })
           });
@@ -851,12 +851,12 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
         if (dup) { setModalError(`Folder "${folderForm.name.trim()}" already exists here.`); return; }
 
         if (modalMode === 'add') {
-          response = await fetch('http://localhost:3002/api/folders', {
+          response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...folderForm, created_by: CURRENT_USER_ID })
           });
         } else {
-          response = await fetch(`http://localhost:3002/api/folders/${selectedItem.id}`, {
+          response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/folders/${selectedItem.id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...folderForm, updated_by: CURRENT_USER_ID })
           });
@@ -897,15 +897,15 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
       const label = modalType === 'category' ? 'Category' : modalType === 'folder' ? 'Folder' : 'File';
 
       if (modalType === 'category') {
-        response = await fetch(`http://localhost:3002/api/categories/${selectedItem.id}`, {
+        response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories/${selectedItem.id}`, {
           method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
       } else if (modalType === 'folder') {
-        response = await fetch(`http://localhost:3002/api/categories/folders/${selectedItem.id}`, {
+        response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories/folders/${selectedItem.id}`, {
           method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
       } else if (modalType === 'file') {
-        response = await fetch(`http://localhost:3002/api/categories/files/${selectedItem.id}`, {
+        response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories/files/${selectedItem.id}`, {
           method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
       }
@@ -947,7 +947,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
         const fd = new FormData();
         fd.append('file', uploadFiles[0]); fd.append('category_id', currentCategoryId.toString()); fd.append('created_by', CURRENT_USER_ID);
         if (currentFolderId) fd.append('folder_id', currentFolderId.toString());
-        response = await fetch('http://localhost:3002/api/files/upload-single', { method: 'POST', body: fd });
+        response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload-single', { method: 'POST', body: fd });
 
         if (response.status === 409) {
           const conflictData = await response.json();
@@ -957,9 +957,9 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
           return;
         }
       } else if (uploadMode === 'bulk') {
-        response = await fetch('http://localhost:3002/api/files/bulk-upload', { method: 'POST', body: formData });
+        response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/bulk-upload', { method: 'POST', body: formData });
       } else {
-        response = await fetch('http://localhost:3002/api/files/upload-multiple', { method: 'POST', body: formData });
+        response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload-multiple', { method: 'POST', body: formData });
       }
 
       if (!response?.ok) throw new Error((await response?.json())?.error || 'Upload failed');
@@ -987,7 +987,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     if (!uploadConflict) return;
     setSubmitting(true);
     try {
-      const response = await fetch('http://localhost:3002/api/files/upload/resolve', {
+      const response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/upload/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1024,7 +1024,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
   const handleDownloadFile = async (file: FileItem) => {
     setSuccess(`⏳ Preparing download for "${file.name}"…`);
     try {
-      const res = await fetch(`http://localhost:3002/api/files/${file.id}/download?user_id=${CURRENT_USER_ID}`);
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${file.id}/download?user_id=${CURRENT_USER_ID}`);
       if (!res.ok) throw new Error('Download failed');
       const blob = await res.blob();
       const url  = window.URL.createObjectURL(blob);
@@ -1046,7 +1046,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
     e.stopPropagation();
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:3002/api/starred-files/star/${file.id}`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/starred-files/star/${file.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ user_id: CURRENT_USER_ID })
@@ -1348,7 +1348,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                         Promise.all(
                           selectedFiles.map(id => {
                             const uid = typeof currentUser?.id === 'string' ? parseInt(currentUser.id) : currentUser?.id;
-                            return fetch(`http://localhost:3002/api/categories/files/${id}`, {
+                            return fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/categories/files/${id}`, {
                               method: 'DELETE',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({ deleted_by: uid, updated_by: uid })
@@ -2129,13 +2129,13 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
             <div className="flex-1 overflow-hidden bg-gray-700 flex items-center justify-center">
               {isImageFile(viewingFile.file_type) ? (
                 <img
-                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  src={`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
                   alt={viewingFile.name}
                   className="max-w-full max-h-full object-contain"
                 />
               ) : isPDFFile(viewingFile.file_type) ? (
                 <iframe
-                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  src={`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
                   className="w-full h-full border-0"
                   title={viewingFile.name}
                 />
@@ -2143,7 +2143,7 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                 <video
                   controls
                   className="max-w-full max-h-full"
-                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  src={`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
                 >
                   Your browser does not support video.
                 </video>
@@ -2152,14 +2152,14 @@ const FileManagement: React.FC<FileManagementProps> = ({ currentUser }) => {
                   <audio
                     controls
                     className="w-full"
-                    src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                    src={`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
                   >
                     Your browser does not support audio.
                   </audio>
                 </div>
               ) : isTextFile(viewingFile.file_type) ? (
                 <iframe
-                  src={`http://localhost:3002/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
+                  src={`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${viewingFile.id}/download?user_id=${CURRENT_USER_ID}&preview=true`}
                   className="w-full h-full border-0 bg-white"
                   title={viewingFile.name}
                 />

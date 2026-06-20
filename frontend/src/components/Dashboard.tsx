@@ -125,7 +125,7 @@ export default function Dashboard({ currentUser }: DashboardProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showModal, setShowModal] = useState(false);
 
-  const API_BASE = 'http://localhost:3002/api/files';
+  const API_BASE = `${import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}"}/api/files`;
 
   // ============================================
   // LIFECYCLE
@@ -208,7 +208,7 @@ export default function Dashboard({ currentUser }: DashboardProps) {
   const loadSharedFiles = async () => {
     try {
       setSharedLoading(true);
-      const response = await fetch('http://localhost:3002/api/share/shared-with-me', {
+      const response = await fetch('${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/share/shared-with-me', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       if (response.ok) {
@@ -232,8 +232,8 @@ export default function Dashboard({ currentUser }: DashboardProps) {
       const headers = { 'Authorization': `Bearer ${token}` };
 
       const [categoryRes, regularRes] = await Promise.all([
-        fetch(`http://localhost:3002/api/starred-files?user_id=${currentUser.id}`, { headers }),
-        fetch(`http://localhost:3002/api/files/starred?user_id=${currentUser.id}`, { headers })
+        fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/starred-files?user_id=${currentUser.id}`, { headers }),
+        fetch(`${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/starred?user_id=${currentUser.id}`, { headers })
       ]);
 
       let combined: StarredFile[] = [];
@@ -306,8 +306,8 @@ export default function Dashboard({ currentUser }: DashboardProps) {
         : file.id;
 
       const url = file.source_type === 'category'
-        ? `http://localhost:3002/api/files/${fileId}/download?user_id=${currentUser.id}`
-        : `http://localhost:3002/api/files/download/${fileId}?user_id=${currentUser.id}`;
+        ? `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${fileId}/download?user_id=${currentUser.id}`
+        : `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/download/${fileId}?user_id=${currentUser.id}`;
 
       const response = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -343,8 +343,8 @@ export default function Dashboard({ currentUser }: DashboardProps) {
 
     // FIX: category files need user_id query param for access check
     const previewUrl = starredPreviewFile.source_type === 'category'
-        ? `http://localhost:3002/api/files/${fileId}/preview?user_id=${currentUser.id}`
-        : `http://localhost:3002/api/files/preview/${fileId}`;
+        ? `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${fileId}/preview?user_id=${currentUser.id}`
+        : `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/preview/${fileId}`;
 
     if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(fileType || '')) {
       return (
@@ -447,8 +447,8 @@ export default function Dashboard({ currentUser }: DashboardProps) {
     try {
       // FIX: use correct endpoint based on source_type
       const url = file.source_type === 'category'
-        ? `http://localhost:3002/api/files/${file.id}/download?user_id=${currentUser.id}`
-        : `http://localhost:3002/api/files/download/${file.id}?user_id=${currentUser.id}`;
+        ? `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${file.id}/download?user_id=${currentUser.id}`
+        : `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/download/${file.id}?user_id=${currentUser.id}`;
 
       const response = await fetch(url, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
@@ -478,8 +478,8 @@ export default function Dashboard({ currentUser }: DashboardProps) {
 
     // FIX: category files need user_id query param for access check
     const previewUrl = previewFile.source_type === 'category'
-      ? `http://localhost:3002/api/files/${previewFile.id}/preview?user_id=${currentUser.id}`
-      : `http://localhost:3002/api/files/preview/${previewFile.id}`;
+      ? `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${previewFile.id}/preview?user_id=${currentUser.id}`
+      : `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/preview/${previewFile.id}`;
 
     if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(fileType || '')) {
       return (
@@ -1352,8 +1352,8 @@ export default function Dashboard({ currentUser }: DashboardProps) {
                   ? (starredPreviewFile.file_id || starredPreviewFile.id)
                   : starredPreviewFile.id;
                 const previewUrl = starredPreviewFile.source_type === 'category'
-                  ? `http://localhost:3002/api/files/${fileId}/preview?user_id=${currentUser.id}`
-                  : `http://localhost:3002/api/files/preview/${fileId}`;
+                  ? `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${fileId}/preview?user_id=${currentUser.id}`
+                  : `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/preview/${fileId}`;
 
                 if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(fileType || '')) {
                   return (
@@ -1448,8 +1448,8 @@ export default function Dashboard({ currentUser }: DashboardProps) {
               (() => {
                 const fileType = previewFile.file_type?.toLowerCase();
                 const previewUrl = previewFile.source_type === 'category'
-                  ? `http://localhost:3002/api/files/${previewFile.id}/preview?user_id=${currentUser.id}`
-                  : `http://localhost:3002/api/files/preview/${previewFile.id}`;
+                  ? `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/${previewFile.id}/preview?user_id=${currentUser.id}`
+                  : `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api/files/preview/${previewFile.id}`;
 
                 if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(fileType || '')) {
                   return (

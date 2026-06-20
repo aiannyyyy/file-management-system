@@ -66,7 +66,7 @@ const Chat: React.FC = () => {
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002';
+  const API_URL = process.env.REACT_APP_API_URL || import.meta.env.VITE_API_URL || "${import.meta.env.VITE_API_URL || "http://localhost:3002"}";
   const token = localStorage.getItem('token');
 
   // Initialize chat on component mount
